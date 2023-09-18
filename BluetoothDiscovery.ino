@@ -4,8 +4,12 @@
  * So far, this code is discovering devices. 
  */
 
-#include <string.h>
 #include <Arduino.h>
+
+#include <map>
+#include <string.h>
+#include <set>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -27,9 +31,19 @@
 #define TARGET_DEVICE_NAME "TargetDevice"
 bool device_found = false;
 
+// a lookup table for the Bluetooth earbuds we want to discover, pair with and connect to.
+std::map<std::string, std::string> deviceNames = {
+    // {"74:74:46:ED:07:6B", "Pixel Buds A Series"},
+    {"58:FC:C6:6C:0A:03", "TOZO Home"},
+    {"54:B7:E5:8C:07:71", "TOZO Mazda"}
+    //REMINDER: no trailing comma!
+};
+
+std::map<std::string, esp_bd_addr_t> discoveredDevices;
+
+
 //Bluetooth Device Address (with is the MAC (Media Access Control))
 esp_bd_addr_t target_device_bda;
-
 bool target_device_found = false;
 
 void print_ESP32_info(){
@@ -144,40 +158,64 @@ void Start_Discovery() {
 void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param) {
     switch (event) {
         case ESP_BT_GAP_DISC_RES_EVT: {
-            for (int i = 0; i < param->disc_res.num_prop; i++) {
-                if (param->disc_res.prop[i].type == ESP_BT_GAP_DEV_PROP_EIR) {
-                    uint8_t *eir = (uint8_t*)param->disc_res.prop[i].val;
-                    uint8_t eir_len = param->disc_res.prop[i].len;
-                    uint8_t *name = esp_bt_gap_resolve_eir_data(eir, ESP_BT_EIR_TYPE_CMPL_LOCAL_NAME, &eir_len);
+            char bda_str[18];
+            sprintf(bda_str, "%02X:%02X:%02X:%02X:%02X:%02X", 
+                param->disc_res.bda[0], param->disc_res.bda[1], param->disc_res.bda[2], 
+                param->disc_res.bda[3], param->disc_res.bda[4], param->disc_res.bda[5]);
 
-                    // Print the MAC address of the discovered device
-                    char bda_str[18]; // xx:xx:xx:xx:xx:xx format
-                    snprintf(bda_str, sizeof(bda_str), "%02x:%02x:%02x:%02x:%02x:%02x",
-                             param->disc_res.bda[0], param->disc_res.bda[1], param->disc_res.bda[2],
-                             param->disc_res.bda[3], param->disc_res.bda[4], param->disc_res.bda[5]);
-                    Serial.printf("Discovered device MAC: %s\n", bda_str);
+            auto it = deviceNames.find(bda_str);
+            if (it != deviceNames.end() && discoveredDevices.find(bda_str) == discoveredDevices.end()) {
+                Serial.printf("Found target device: %s (BDA: %s)\n", it->second.c_str(), bda_str);
+                
+                // Store the BDA and its logical name in the discoveredDevices map
+                memcpy(discoveredDevices[bda_str], param->disc_res.bda, sizeof(esp_bd_addr_t));
+                
+                // Optional: Set pin if you want to pair immediately after discovery.
+                // esp_bt_pin_code_t pin_code = {'1', '2', '3', '4'};
+                // esp_bt_gap_set_pin(ESP_BT_PIN_TYPE_FIXED, 4, pin_code);
+                // esp_bt_gap_pin_reply(param->disc_res.bda, true, 4, pin_code);
+            }
 
-                    if (name) {
-                        Serial.printf("Device name: %.*s\n", eir_len, name);
-                        
-                        // Here you were matching a target device name.
-                        // If you want to proceed with some action upon finding the target, you can keep the following code.
-                        if (strncmp((char *)name, TARGET_DEVICE_NAME, eir_len) == 0) {
-                            Serial.println("Found target device, stopping discovery...");
-                            esp_bt_gap_cancel_discovery();
-
-                            esp_bt_pin_code_t pin_code = {'1', '2', '3', '4'};
-                            esp_bt_gap_set_pin(ESP_BT_PIN_TYPE_FIXED, 4, pin_code);
-                            esp_bt_gap_pin_reply(param->disc_res.bda, true, 4, pin_code);
-                        }
-                    }
-                }
+            // If we've discovered all devices in our map, stop discovery
+            if (discoveredDevices.size() == deviceNames.size()) {
+                Serial.println("Found all target devices. Stopping discovery...");
+                esp_bt_gap_cancel_discovery();
             }
             break;
         }
         // ... (other cases remain unchanged)
     }
 }
+
+
+// void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param) {
+//     switch (event) {
+//         case ESP_BT_GAP_DISC_RES_EVT: {
+//             char bda_str[18];
+//             sprintf(bda_str, "%02X:%02X:%02X:%02X:%02X:%02X", 
+//                 param->disc_res.bda[0], param->disc_res.bda[1], param->disc_res.bda[2], 
+//                 param->disc_res.bda[3], param->disc_res.bda[4], param->disc_res.bda[5]);
+
+//             // Checking if the discovered BDA exists in our predefined set
+//             auto it = deviceNames.find(bda_str);
+//             if (it != deviceNames.end()) {
+//                 Serial.printf("Found target device: %s (BDA: %s)\n", it->second.c_str(), bda_str);
+                
+//                 // Storing the BDA of the discovered target device
+//                 memcpy(target_device_bda, param->disc_res.bda, sizeof(esp_bd_addr_t));
+
+//                 esp_bt_gap_cancel_discovery();
+
+//                 esp_bt_pin_code_t pin_code = {'1', '2', '3', '4'};
+//                 esp_bt_gap_set_pin(ESP_BT_PIN_TYPE_FIXED, 4, pin_code);
+//                 esp_bt_gap_pin_reply(param->disc_res.bda, true, 4, pin_code);
+//             }
+//             break;
+//         }
+//         // ... (other cases remain unchanged)
+//     }
+// }
+
 
 void a2dp_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *a2d) {
     switch (event) {
