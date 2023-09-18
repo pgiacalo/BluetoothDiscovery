@@ -149,6 +149,9 @@ void Start_Discovery() {
  *  3) Roles: GAP defines roles such as "Central" and "Peripheral." In the case of Bluetooth Low Energy (BLE), a Central device (like a smartphone) scans and connects to Peripheral devices (like a heart rate monitor).
  */
 void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param) {
+    // for debugging - print all events right before the switch statement
+    Serial.printf("Received GAP event: %s\n", gap_event_to_string(event));
+
     switch (event) {
         case ESP_BT_GAP_DISC_RES_EVT: {
             char bda_str[18];
@@ -156,6 +159,10 @@ void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
                 param->disc_res.bda[0], param->disc_res.bda[1], param->disc_res.bda[2], 
                 param->disc_res.bda[3], param->disc_res.bda[4], param->disc_res.bda[5]);
 
+            // Print every discovered device for debugging
+            Serial.printf("Discovered device BDA: %s\n", bda_str);
+
+            //now we'll check to see if its one of the devices we want to connect to
             auto it = deviceNames.find(bda_str);
             if (it != deviceNames.end() && discoveredDevices.find(bda_str) == discoveredDevices.end()) {
                 Serial.printf("Found target device: %s (BDA: %s)\n", it->second.c_str(), bda_str);
@@ -300,6 +307,40 @@ void pair_with_all_discovered_devices() {
     }
 }
 
+//helper method for debugging -- converts numeric events types to readable strings
+const char* gap_event_to_string(esp_bt_gap_cb_event_t event) {
+    switch (event) {
+       case ESP_BT_GAP_DISC_RES_EVT:
+            return "ESP_BT_GAP_DISC_RES_EVT";
+        case ESP_BT_GAP_AUTH_CMPL_EVT:
+            return "ESP_BT_GAP_AUTH_CMPL_EVT";
+        case ESP_BT_GAP_DISC_STATE_CHANGED_EVT:
+            return "ESP_BT_GAP_DISC_STATE_CHANGED_EVT";
+        case ESP_BT_GAP_RMT_SRVCS_EVT:
+            return "ESP_BT_GAP_RMT_SRVCS_EVT";
+        case ESP_BT_GAP_RMT_SRVC_REC_EVT:
+            return "ESP_BT_GAP_RMT_SRVC_REC_EVT";
+        case ESP_BT_GAP_PIN_REQ_EVT:
+            return "ESP_BT_GAP_PIN_REQ_EVT";
+        case ESP_BT_GAP_CFM_REQ_EVT:
+            return "ESP_BT_GAP_CFM_REQ_EVT";
+        case ESP_BT_GAP_KEY_NOTIF_EVT:
+            return "ESP_BT_GAP_KEY_NOTIF_EVT";
+        case ESP_BT_GAP_KEY_REQ_EVT:
+            return "ESP_BT_GAP_KEY_REQ_EVT";
+        case ESP_BT_GAP_READ_RSSI_DELTA_EVT:
+            return "ESP_BT_GAP_READ_RSSI_DELTA_EVT";
+        case ESP_BT_GAP_SET_AFH_CHANNELS_EVT:
+            return "ESP_BT_GAP_SET_AFH_CHANNELS_EVT";
+        case ESP_BT_GAP_CONFIG_EIR_DATA_EVT:
+            return "ESP_BT_GAP_CONFIG_EIR_DATA_EVT";
+        default: 
+            static char unknownEventStr[50];
+            snprintf(unknownEventStr, sizeof(unknownEventStr), "UNKNOWN_EVENT (Value: %d)", event);
+            return unknownEventStr;
+    }
+}
+
 void app_main() {
     Initialize_Stack();
     Start_Discovery();
@@ -321,3 +362,4 @@ void setup() {
 void loop() {
     // Code to be run repeatedly here
 }
+
