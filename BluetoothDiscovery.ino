@@ -7,6 +7,7 @@
 #include <Arduino.h>
 
 #include <map>
+#include <vector>
 #include <string.h>
 #include <set>
 #include <algorithm>
@@ -49,12 +50,20 @@ std::map<std::string, std::string> targetDeviceNames = {
     //REMINDER: no trailing comma
 };
 
-//map of discovered device_bda to device_name
-std::map<std::string, esp_bd_addr_t> discoveredDevices;
+std::map<std::string, std::string> discoveredDevices;  // Other discovered devices (if any): BDA -> Name
 
-//map of BLE discovered devices
-std::map<std::string, esp_bd_addr_t> bleDiscoveredDevices;
+std::map<std::string, std::string> bleDiscoveredDevices;  // BLE discovered devices: BDA -> Name
+
 std::map<std::string, std::string> bleDeviceNames;
+
+
+struct BleAdvertisementData {
+    std::string deviceName = "";
+    int8_t txPowerLevel = INT8_MIN; // Set default to minimum int8_t value to indicate "not set"
+    uint16_t appearance = UINT16_MAX; // Use a default that's unlikely in real data to indicate "not set"
+    std::vector<uint8_t> manufacturerData;
+    std::vector<uint8_t> serviceUUIDs;
+};
 
 void Initialize_Stack() {
     esp_err_t ret;
@@ -130,22 +139,18 @@ void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
 
     switch (event) {
         case ESP_BT_GAP_DISC_RES_EVT: {
-            char bda_str[18];
-            sprintf(bda_str, "%02X:%02X:%02X:%02X:%02X:%02X", 
-                param->disc_res.bda[0], param->disc_res.bda[1], param->disc_res.bda[2], 
-                param->disc_res.bda[3], param->disc_res.bda[4], param->disc_res.bda[5]);
+            std::string bda_str = bdaToString(param->disc_res.bda);
 
             // Print every discovered device for debugging
-            // Serial.printf("Discovered device BDA: %s\n", bda_str);
+            // Serial.printf("Discovered device BDA: %s\n", bda_str.c_str());
 
-            //now we'll check to see if its one of the devices we want to connect to
+            // Now we'll check to see if its one of the devices we want to connect to
             auto it = targetDeviceNames.find(bda_str);
             if (it != targetDeviceNames.end() && discoveredDevices.find(bda_str) == discoveredDevices.end()) {
-                Serial.printf("------------------ Found target device: %s (BDA: %s)\n", it->second.c_str(), bda_str);
-                
+                Serial.printf("------------------ Found target device: %s (BDA: %s)\n", it->second.c_str(), bda_str.c_str());
+
                 // Store the BDA and its logical name in the discoveredDevices map
-                memcpy(discoveredDevices[bda_str], param->disc_res.bda, sizeof(esp_bd_addr_t));
-                
+                discoveredDevices[bda_str] = it->second;
             }
 
             // If we've discovered all devices in our map, stop discovery
@@ -159,75 +164,60 @@ void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
         }
 
         case ESP_BT_GAP_AUTH_CMPL_EVT: {
+            std::string bda_str = bdaToString(param->auth_cmpl.bda);
             if (param->auth_cmpl.stat == ESP_BT_STATUS_SUCCESS) {
                 Serial.printf("Authentication success: %s\n", param->auth_cmpl.device_name);
-                Serial.printf("BDA: %02X:%02X:%02X:%02X:%02X:%02X\n",
-                              param->auth_cmpl.bda[0], param->auth_cmpl.bda[1], param->auth_cmpl.bda[2],
-                              param->auth_cmpl.bda[3], param->auth_cmpl.bda[4], param->auth_cmpl.bda[5]);
+                Serial.printf("BDA: %s\n", bda_str.c_str());
             } else {
                 Serial.printf("Authentication failed, status: %d\n", param->auth_cmpl.stat);
-                Serial.printf("BDA: %02X:%02X:%02X:%02X:%02X:%02X\n",
-                              param->auth_cmpl.bda[0], param->auth_cmpl.bda[1], param->auth_cmpl.bda[2],
-                              param->auth_cmpl.bda[3], param->auth_cmpl.bda[4], param->auth_cmpl.bda[5]);
+                Serial.printf("BDA: %s\n", bda_str.c_str());
             }
             break;
-        }        
+        }
 
         case ESP_BT_GAP_DISC_STATE_CHANGED_EVT:
             Serial.println("Discovery state changed.");
             break;
 
-        case ESP_BT_GAP_RMT_SRVCS_EVT:
-            Serial.printf("Remote services for BDA: %02X:%02X:%02X:%02X:%02X:%02X\n",
-                          param->rmt_srvcs.bda[0], param->rmt_srvcs.bda[1], param->rmt_srvcs.bda[2],
-                          param->rmt_srvcs.bda[3], param->rmt_srvcs.bda[4], param->rmt_srvcs.bda[5]);
+        case ESP_BT_GAP_RMT_SRVCS_EVT: {
+            std::string bda_str = bdaToString(param->rmt_srvcs.bda);
+            Serial.printf("Remote services for BDA: %s\n", bda_str.c_str());
             break;
+        }
 
         case ESP_BT_GAP_RMT_SRVC_REC_EVT:
             Serial.println("Received remote service record.");
             break;
 
-        case ESP_BT_GAP_PIN_REQ_EVT:
-            Serial.printf("PIN code request for BDA: %02X:%02X:%02X:%02X:%02X:%02X\n",
-                          param->pin_req.bda[0], param->pin_req.bda[1], param->pin_req.bda[2],
-                          param->pin_req.bda[3], param->pin_req.bda[4], param->pin_req.bda[5]);
+        case ESP_BT_GAP_PIN_REQ_EVT: {
+            std::string bda_str = bdaToString(param->pin_req.bda);
+            Serial.printf("PIN code request for BDA: %s\n", bda_str.c_str());
             break;
+        }
 
-        case ESP_BT_GAP_CFM_REQ_EVT:
-            Serial.printf("Confirm request for passkey: %d, for BDA: %02X:%02X:%02X:%02X:%02X:%02X\n",
-                          param->cfm_req.num_val,
-                          param->cfm_req.bda[0], param->cfm_req.bda[1], param->cfm_req.bda[2],
-                          param->cfm_req.bda[3], param->cfm_req.bda[4], param->cfm_req.bda[5]);
+        case ESP_BT_GAP_CFM_REQ_EVT: {
+            std::string bda_str = bdaToString(param->cfm_req.bda);
+            Serial.printf("Confirm request for passkey: %d, for BDA: %s\n", param->cfm_req.num_val, bda_str.c_str());
             break;
+        }
 
-        case ESP_BT_GAP_KEY_NOTIF_EVT:
-            Serial.printf("Passkey notification: %d, for BDA: %02X:%02X:%02X:%02X:%02X:%02X\n",
-                          param->key_notif.passkey,
-                          param->key_notif.bda[0], param->key_notif.bda[1], param->key_notif.bda[2],
-                          param->key_notif.bda[3], param->key_notif.bda[4], param->key_notif.bda[5]);
+        case ESP_BT_GAP_KEY_NOTIF_EVT: {
+            std::string bda_str = bdaToString(param->key_notif.bda);
+            Serial.printf("Passkey notification: %d, for BDA: %s\n", param->key_notif.passkey, bda_str.c_str());
             break;
+        }
 
-        case ESP_BT_GAP_KEY_REQ_EVT:
-            Serial.printf("Passkey request for BDA: %02X:%02X:%02X:%02X:%02X:%02X\n",
-                          param->key_req.bda[0], param->key_req.bda[1], param->key_req.bda[2],
-                          param->key_req.bda[3], param->key_req.bda[4], param->key_req.bda[5]);
+        case ESP_BT_GAP_KEY_REQ_EVT: {
+            std::string bda_str = bdaToString(param->key_req.bda);
+            Serial.printf("Passkey request for BDA: %s\n", bda_str.c_str());
             break;
+        }
 
-        case ESP_BT_GAP_READ_RSSI_DELTA_EVT:
-            /* Commented out due to compilation issue
-            Serial.printf("RSSI delta for BDA: %02X:%02X:%02X:%02X:%02X:%02X, RSSI: %d\n",
-                          param->read_rssi_delta.bda[0], param->read_rssi_delta.bda[1], param->read_rssi_delta.bda[2],
-                          param->read_rssi_delta.bda[3], param->read_rssi_delta.bda[4], param->read_rssi_delta.bda[5],
-                          param->read_rssi_delta.rssi);
-            */
-            Serial.printf("RSSI delta event for BDA: %02X:%02X:%02X:%02X:%02X:%02X\n",
-                          param->read_rssi_delta.bda[0], param->read_rssi_delta.bda[1], param->read_rssi_delta.bda[2],
-                          param->read_rssi_delta.bda[3], param->read_rssi_delta.bda[4], param->read_rssi_delta.bda[5]);
+        case ESP_BT_GAP_READ_RSSI_DELTA_EVT: {
+            std::string bda_str = bdaToString(param->read_rssi_delta.bda);
+            Serial.printf("RSSI delta event for BDA: %s\n", bda_str.c_str());
             break;
-
-        // case ESP_BT_GAP_LINK_STATUS_EVT:
-        //     Serial.printf("Link status changed for BDA: %02X:%02X:%02X:%02X:%02X:%02X, status: %d\n",
-        //                   param->link_status.bda[0], param->link_status.bda[1], param->link_status.bda[2],
+        }
                          
         case ESP_BT_GAP_SET_AFH_CHANNELS_EVT:
             // Handle the set AFH channels event here
@@ -239,13 +229,13 @@ void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
             Serial.println("Config EIR data event triggered.");
             break;
 
-        case ESP_BT_GAP_MODE_CHG_EVT:
+        case ESP_BT_GAP_MODE_CHG_EVT: {
+            std::string bda_str = bdaToString(param->mode_chg.bda);
             Serial.println("ESP_BT_GAP_MODE_CHG_EVT: Mode change event triggered.");
-            Serial.printf("Device BDA: %02X:%02X:%02X:%02X:%02X:%02X\n", 
-                          param->mode_chg.bda[0], param->mode_chg.bda[1], param->mode_chg.bda[2], 
-                          param->mode_chg.bda[3], param->mode_chg.bda[4], param->mode_chg.bda[5]);
+            Serial.printf("Device BDA: %s\n", bda_str.c_str());
             Serial.printf("New mode: %d\n", param->mode_chg.mode);
             break;
+        }
 
         //------added
         case ESP_BT_GAP_READ_REMOTE_NAME_EVT:
@@ -295,10 +285,12 @@ void a2dp_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *a2d) {
     }
 }
 
-void pair_with_device(const uint8_t* bda, const std::string& deviceName) {
-    // Logging device details
-    Serial.printf("Attempting to pair with device: %s (BDA: %02X:%02X:%02X:%02X:%02X:%02X)\n", 
-                  deviceName.c_str(), bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]);
+void pair_with_device(const std::string& bdaStr, const std::string& deviceName) {
+
+    Serial.printf("Attempting to pair with device: Name: %s, BDA: %s\n", deviceName.c_str(), bdaStr.c_str());
+
+    esp_bd_addr_t bda;
+    stringToBda(bdaStr, bda);
 
     // Set ESP32 to use SSP mode
     // esp_bt_sp_param_t param_type = ESP_BT_SP_IOCAP_MODE;
@@ -308,8 +300,7 @@ void pair_with_device(const uint8_t* bda, const std::string& deviceName) {
 
 void pair_with_all_discovered_devices() {
     for (auto& pair : discoveredDevices) {
-        pair_with_device(const_cast<uint8_t*>(pair.second), targetDeviceNames[pair.first]);
-        // pair_with_device(const_cast<uint8_t*>(pair.second), pair.first);
+        pair_with_device(pair.first, pair.second); // Here, pair.first is the BDA string and pair.second is the device name string
         vTaskDelay(pdMS_TO_TICKS(2000)); // 2-second delay for clarity and to avoid too rapid consecutive actions
     }
     Serial.println("DONE Attempting to pair.");
@@ -408,31 +399,23 @@ void ble_gap_callback(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *para
             }
             break;
 
-        case ESP_GAP_BLE_SCAN_RESULT_EVT: {
-            esp_ble_gap_cb_param_t *scan_result = (esp_ble_gap_cb_param_t *)param;
-            
-            // Check if the result is for an inquiry response
-            if (scan_result->scan_rst.search_evt == ESP_GAP_SEARCH_INQ_RES_EVT) {
-                std::string bda_std_string = bdaToString(scan_result->scan_rst.bda);
-                
-                // Check if the device is already in the map
+        case ESP_GAP_BLE_SCAN_RESULT_EVT:
+            if (param->scan_rst.search_evt == ESP_GAP_SEARCH_INQ_RES_EVT) {
+
+                std::string bda_std_string = bdaToString(param->scan_rst.bda);
+
                 if (bleDiscoveredDevices.find(bda_std_string) == bleDiscoveredDevices.end()) {
-                    // Store BDA in bleDiscoveredDevices map
-                    std::copy(scan_result->scan_rst.bda, scan_result->scan_rst.bda + ESP_BD_ADDR_LEN, bleDiscoveredDevices[bda_std_string]);
+                    // New device discovered
+                    bleDiscoveredDevices[bda_std_string] = bda_std_string;
+
+                    // Print the advertisement data using the utility function
+                    printBleAdvertisementData(param->scan_rst.ble_adv, param->scan_rst.adv_data_len, bda_std_string);
                     
-                    // Store device name in bleDeviceNames map
-                    std::string deviceName;
-                    if (scan_result->scan_rst.adv_data_len > 0) {
-                        deviceName = std::string(reinterpret_cast<char*>(scan_result->scan_rst.ble_adv), scan_result->scan_rst.adv_data_len);
-                    } else {
-                        deviceName = "Unknown";
-                    }
-                    bleDeviceNames[bda_std_string] = deviceName;
+                    // Additional logic for target devices if needed
+                    // ...
                 }
             }
             break;
-        }
-
         case ESP_GAP_BLE_SCAN_STOP_COMPLETE_EVT:
             // Assuming this is when the scanning completes. Adjust as necessary.
             if (param->scan_stop_cmpl.status == ESP_BT_STATUS_SUCCESS) {
@@ -441,7 +424,7 @@ void ble_gap_callback(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *para
                 Serial.println("BLE scan failed to stop scanning");
             }
             for (const auto& entry : bleDiscoveredDevices) {
-              Serial.printf("Found BLE device. BDA: %s, Name: %s\n", entry.first.c_str(), bdaToString(entry.second).c_str());
+                Serial.printf("Found BLE device. BDA: %s, Name: %s\n", entry.first.c_str(), entry.second.c_str());
             }
             break;
 
@@ -479,18 +462,16 @@ void ble_scan_callback(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
 
     case ESP_GAP_BLE_SCAN_RESULT_EVT:
         if (param->scan_rst.search_evt == ESP_GAP_SEARCH_INQ_RES_EVT) {
-            char bda_str[18];
-            sprintf(bda_str, "%02X:%02X:%02X:%02X:%02X:%02X",
-                    param->scan_rst.bda[0], param->scan_rst.bda[1], param->scan_rst.bda[2],
-                    param->scan_rst.bda[3], param->scan_rst.bda[4], param->scan_rst.bda[5]);
-            
-            std::string bda_std_string = bda_str;
+
+            std::string bda_std_string = bdaToString(param->scan_rst.bda);
 
             if (bleDiscoveredDevices.find(bda_std_string) == bleDiscoveredDevices.end()) {
                 // New device discovered
-                std::copy(param->scan_rst.bda, param->scan_rst.bda + 6, bleDiscoveredDevices[bda_std_string]);
+                bleDiscoveredDevices[bda_std_string] = bda_std_string;  // Store the BDA string as both key and value
 
-                Serial.printf("Found BLE device. Address: %s, Name: %s\n", bda_str, param->scan_rst.ble_adv[2] == '\0' ? "Unknown" : (char *) &param->scan_rst.ble_adv[2]);
+                Serial.printf("Found BLE device. Address: %s, Name: %s\n", 
+                              bda_std_string.c_str(), 
+                              param->scan_rst.ble_adv[2] == '\0' ? "Unknown" : (char *) &param->scan_rst.ble_adv[2]);
                 
                 // Check if this is one of the target devices
                 if (targetDeviceNames.find(bda_std_string) != targetDeviceNames.end()) {
@@ -499,7 +480,6 @@ void ble_scan_callback(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
             }
         }
         break;
-
 
     default:
         break;
@@ -525,19 +505,100 @@ void compareAndReportMatches() {
 
     for (const auto& bleDevice : bleDiscoveredDevices) {
         if (targetDeviceNames.find(bleDevice.first) != targetDeviceNames.end()) {
-          matchesFound = true;
-          Serial.printf("Match found: BDA: %02x:%02x:%02x:%02x:%02x:%02x, Name (from BT): %s, Name (from BLE): %s\n", 
-                        bleDevice.second[0], bleDevice.second[1], bleDevice.second[2], 
-                        bleDevice.second[3], bleDevice.second[4], bleDevice.second[5], 
-                        targetDeviceNames[bleDevice.first].c_str(), 
-                        bleDevice.first.c_str());
-          
+            matchesFound = true;
+            Serial.printf("Match found: BDA: %s, Name (from BT): %s, Name (from BLE): %s\n", 
+                          bleDevice.first.c_str(),
+                          targetDeviceNames[bleDevice.first].c_str(), 
+                          bleDevice.second.c_str());
         }
     }
-    if (!matchesFound){
-      Serial.println("BLE Discovery Found NO Devices that match the Target Devices");
+
+    if (!matchesFound) {
+        Serial.println("BLE Discovery Found NO Devices that match the Target Devices");
     }
 }
+
+BleAdvertisementData extractBleAdvFields(const uint8_t* ble_adv, uint8_t adv_length) {
+    BleAdvertisementData advData;
+    uint8_t index = 0;
+    
+    while (index < adv_length) {
+        uint8_t length = ble_adv[index++];
+        if (length == 0) break; // End of advertisement data
+        
+        uint8_t type = ble_adv[index];
+        
+        switch(type) {
+            case 0x09: // Complete Local Name
+                advData.deviceName.assign(reinterpret_cast<const char*>(ble_adv + index + 1), length - 1);
+                break;
+            case 0x19: // Appearance
+                advData.appearance = (ble_adv[index + 2] << 8) | ble_adv[index + 1];
+                break;
+            case 0x0A: // Tx Power Level
+                advData.txPowerLevel = ble_adv[index + 1];
+                break;
+            case 0xFF: // Manufacturer Specific Data
+                advData.manufacturerData.assign(ble_adv + index + 1, ble_adv + index + length);
+                break;
+            case 0x02: // Incomplete List of 16-bit Service Class UUIDs
+            case 0x03: // Complete List of 16-bit Service Class UUIDs
+                // You can expand on this as needed
+                advData.serviceUUIDs.assign(ble_adv + index + 1, ble_adv + index + length);
+                break;
+            // ... Add more cases as needed
+        }
+        
+        index += length;
+    }
+
+    return advData;
+}
+
+void printBleAdvertisementData(const uint8_t* ble_adv, uint8_t adv_length, const std::string& address) {
+    BleAdvertisementData advData = extractBleAdvFields(ble_adv, adv_length);
+
+    Serial.printf("Found BLE device. Address: %s\n", address.c_str());
+
+    // Print device name if available
+    Serial.printf("Device name length: %d\n", advData.deviceName.length());
+    if (!advData.deviceName.empty()) {
+        Serial.printf("Device Name: %s\n", advData.deviceName.c_str());
+    } else {
+        Serial.println("Device Name: Unknown");
+    }
+
+    // Print Appearance if available
+    Serial.printf("Appearance: %d\n", advData.appearance);
+    if (advData.appearance != UINT16_MAX) {
+        Serial.printf("Valid Appearance: %d\n", advData.appearance);
+    }
+
+    // Print Tx Power Level if available
+    Serial.printf("Tx Power Level: %d dBm\n", advData.txPowerLevel);
+    if (advData.txPowerLevel != INT8_MIN) {
+        Serial.printf("Valid Tx Power Level: %d dBm\n", advData.txPowerLevel);
+    }
+
+    // Print Manufacturer Specific Data if available
+    if (!advData.manufacturerData.empty()) {
+        Serial.print("Manufacturer Data: ");
+        for (uint8_t byte : advData.manufacturerData) {
+            Serial.printf("%02X ", byte);
+        }
+        Serial.println();
+    }
+
+    // Print Service UUIDs if available
+    if (!advData.serviceUUIDs.empty()) {
+        Serial.print("Service UUIDs: ");
+        for (uint8_t byte : advData.serviceUUIDs) {
+            Serial.printf("%02X ", byte);
+        }
+        Serial.println();
+    }
+}
+
 
 //====================================== END BLE CODE ==============================
 
@@ -588,16 +649,18 @@ void print_ESP32_info(){
     return;
 }
 
+// Convert esp_bd_addr_t (Bluetooth Device Address) to its string representation
 std::string bdaToString(const esp_bd_addr_t bda) {
-    std::ostringstream oss;
-    for (int i = 0; i < ESP_BD_ADDR_LEN; ++i) {
-        oss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(bda[i]);
-        if (i != ESP_BD_ADDR_LEN - 1) {
-            oss << ":";
-        }
-    }
-    return oss.str();
+    char bda_str[18];
+    sprintf(bda_str, "%02X:%02X:%02X:%02X:%02X:%02X", bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]);
+    return std::string(bda_str);
 }
+
+// Convert string representation of BDA to esp_bd_addr_t
+void stringToBda(const std::string& bda_string, esp_bd_addr_t& bda) {
+    sscanf(bda_string.c_str(), "%02x:%02x:%02x:%02x:%02x:%02x", &bda[0], &bda[1], &bda[2], &bda[3], &bda[4], &bda[5]);
+}
+
 //====================================== END UTILITIES ==============================
 
 
