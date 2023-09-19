@@ -20,6 +20,7 @@
 #include <inttypes.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/timers.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "esp_system.h"
@@ -37,7 +38,6 @@
 
 
 #define TAG "ESP32_PAIRING"
-#define TARGET_DEVICE_NAME "TargetDevice"
 bool device_found = false;
 
 bool isDiscoveryComplete = false;
@@ -46,16 +46,12 @@ bool isDiscoveryComplete = false;
 std::map<std::string, std::string> targetDeviceNames = {
     // {"74:74:46:ED:07:6B", "Pixel Buds A Series"},
     {"58:FC:C6:6C:0A:03", "TOZO Home"},
-    {"54:B7:E5:8C:07:71", "TOZO Mazda"}
-    //REMINDER: no trailing comma
+    {"54:B7:E5:8C:07:71", "TOZO Mazda"},
 };
 
-std::map<std::string, std::string> discoveredDevices;  // Other discovered devices (if any): BDA -> Name
+std::map<std::string, esp_bd_addr_t> discoveredDevices;       // BDA string -> Name
 
-std::map<std::string, std::string> bleDiscoveredDevices;  // BLE discovered devices: BDA -> Name
-
-std::map<std::string, std::string> bleDeviceNames;
-
+std::map<std::string, std::string> bleDiscoveredDevices;    // BLE discovered devices: BDA string -> Name
 
 struct BleAdvertisementData {
     std::string deviceName = "";
@@ -64,6 +60,9 @@ struct BleAdvertisementData {
     std::vector<uint8_t> manufacturerData;
     std::vector<uint8_t> serviceUUIDs;
 };
+
+static xTimerHandle scanTimer = NULL;
+const int BLE_SCAN_DURATION = 10000; // milliseconds
 
 void Initialize_Stack() {
     esp_err_t ret;
@@ -110,12 +109,7 @@ void Initialize_Stack() {
     esp_a2d_register_callback(a2dp_callback);
     
     // Set device name
-    esp_bt_dev_set_device_name("ESP32_Device");
-}
-
-// connect to an A2DP device
-void connect_a2dp(esp_bd_addr_t remote_bda) {
-    esp_a2d_sink_connect(remote_bda);
+    esp_bt_dev_set_device_name("ESP32_WROOM_32D");
 }
 
 void Start_Discovery() {
@@ -123,6 +117,7 @@ void Start_Discovery() {
     Serial.println("Starting discovery...");
     esp_bt_gap_register_callback(app_gap_callback);
     esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
+    //scan for 30 seconds with no limit on the number of devices discovered
     esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, 30, 0);
 }
 
@@ -141,16 +136,17 @@ void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
         case ESP_BT_GAP_DISC_RES_EVT: {
             std::string bda_str = bdaToString(param->disc_res.bda);
 
-            // Print every discovered device for debugging
-            // Serial.printf("Discovered device BDA: %s\n", bda_str.c_str());
-
             // Now we'll check to see if its one of the devices we want to connect to
             auto it = targetDeviceNames.find(bda_str);
             if (it != targetDeviceNames.end() && discoveredDevices.find(bda_str) == discoveredDevices.end()) {
                 Serial.printf("------------------ Found target device: %s (BDA: %s)\n", it->second.c_str(), bda_str.c_str());
 
-                // Store the BDA and its logical name in the discoveredDevices map
-                discoveredDevices[bda_str] = it->second;
+                // Store the BDA in the discoveredDevices map
+                memcpy(discoveredDevices[bda_str], param->disc_res.bda, sizeof(esp_bd_addr_t)); // <-- This line changed with map redefinition
+                // discoveredDevices[bda_str] = param->disc_res.bda; // <-- This line changed
+
+                // Initiating pairing with the target device.
+                esp_bt_gap_ssp_confirm_reply(param->disc_res.bda, true);
             }
 
             // If we've discovered all devices in our map, stop discovery
@@ -163,7 +159,7 @@ void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
             break;
         }
 
-        case ESP_BT_GAP_AUTH_CMPL_EVT: {
+        case ESP_BT_GAP_AUTH_CMPL_EVT: {  //Occurs once the authentication process completes.
             std::string bda_str = bdaToString(param->auth_cmpl.bda);
             if (param->auth_cmpl.stat == ESP_BT_STATUS_SUCCESS) {
                 Serial.printf("Authentication success: %s\n", param->auth_cmpl.device_name);
@@ -182,32 +178,46 @@ void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
         case ESP_BT_GAP_RMT_SRVCS_EVT: {
             std::string bda_str = bdaToString(param->rmt_srvcs.bda);
             Serial.printf("Remote services for BDA: %s\n", bda_str.c_str());
+
+            // TODO: Store or utilize the provided service data if needed.
+
             break;
         }
-
-        case ESP_BT_GAP_RMT_SRVC_REC_EVT:
-            Serial.println("Received remote service record.");
-            break;
 
         case ESP_BT_GAP_PIN_REQ_EVT: {
             std::string bda_str = bdaToString(param->pin_req.bda);
             Serial.printf("PIN code request for BDA: %s\n", bda_str.c_str());
+
+            const char* known_pin = "1234"; // Example PIN. Typically 0000, 1234 or 1111 for consumer devices.
+            esp_bt_pin_code_t pin_code;
+            strncpy((char*)pin_code, known_pin, ESP_BT_PIN_CODE_LEN);
+            esp_bt_gap_pin_reply(param->pin_req.bda, true, ESP_BT_PIN_CODE_LEN, pin_code);
+
             break;
         }
 
         case ESP_BT_GAP_CFM_REQ_EVT: {
             std::string bda_str = bdaToString(param->cfm_req.bda);
             Serial.printf("Confirm request for passkey: %d, for BDA: %s\n", param->cfm_req.num_val, bda_str.c_str());
+
+            // If passkey matches the expected passkey (e.g., "123456"), automatically confirm.
+            // Otherwise, user intervention may be required.
+            if (param->cfm_req.num_val == 123456) { // Example passkey. Adjust as necessary.
+                esp_bt_gap_ssp_confirm_reply(param->cfm_req.bda, true);
+            } else {
+                // Handle unexpected passkey.
+            }
+
             break;
         }
 
-        case ESP_BT_GAP_KEY_NOTIF_EVT: {
+        case ESP_BT_GAP_KEY_NOTIF_EVT: {  //Notifies the passkey.
             std::string bda_str = bdaToString(param->key_notif.bda);
             Serial.printf("Passkey notification: %d, for BDA: %s\n", param->key_notif.passkey, bda_str.c_str());
             break;
         }
 
-        case ESP_BT_GAP_KEY_REQ_EVT: {
+        case ESP_BT_GAP_KEY_REQ_EVT: {  //Request for the passkey.
             std::string bda_str = bdaToString(param->key_req.bda);
             Serial.printf("Passkey request for BDA: %s\n", bda_str.c_str());
             break;
@@ -272,39 +282,120 @@ void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
     }
 }
 
-void a2dp_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *a2d) {
+void a2dp_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param) {
     switch (event) {
         case ESP_A2D_CONNECTION_STATE_EVT:
-            if (a2d->conn_stat.state == ESP_A2D_CONNECTION_STATE_CONNECTED) {
-                Serial.println("A2DP connected");
-            } else if (a2d->conn_stat.state == ESP_A2D_CONNECTION_STATE_DISCONNECTED) {
-                Serial.println("A2DP disconnected");
-            }
+            Serial.println("A2DP Event: Connection State Changed");
+            // Handle connection state changes here
             break;
-        // ... You can handle more A2DP-specific events here ...
+
+        case ESP_A2D_AUDIO_STATE_EVT:
+            Serial.println("A2DP Event: Audio Stream Transmission State Changed");
+            // Handle audio stream transmission state changes here
+            break;
+
+        case ESP_A2D_AUDIO_CFG_EVT:
+            Serial.println("A2DP Event: Audio Codec is Configured (A2DP SINK)");
+            // Handle audio codec configuration (for A2DP SINK) here
+            break;
+
+        case ESP_A2D_MEDIA_CTRL_ACK_EVT:
+            Serial.println("A2DP Event: Acknowledge for Media Control Commands");
+            // Handle acknowledgment for media control commands here
+            break;
+
+        case ESP_A2D_PROF_STATE_EVT:
+            Serial.println("A2DP Event: A2DP Init & Deinit Complete");
+            // Handle A2DP initialization and deinitialization completion here
+            break;
+
+        // case ESP_A2D_SNK_PSC_CFG_EVT:
+        //     Serial.println("A2DP Event: Protocol Service Capabilities Configured (A2DP SINK)");
+        //     // Handle protocol service capabilities configuration (for A2DP SINK) here
+        //     break;
+
+        // case ESP_A2D_SNK_SET_DELAY_VALUE_EVT:
+        //     Serial.println("A2DP Event: A2DP Sink Set Delay Report Value Complete");
+        //     // Handle A2DP sink set delay report value completion here
+        //     break;
+
+        // case ESP_A2D_SNK_GET_DELAY_VALUE_EVT:
+        //     Serial.println("A2DP Event: A2DP Sink Get Delay Report Value Complete");
+        //     // Handle A2DP sink get delay report value completion here
+        //     break;
+
+        // case ESP_A2D_REPORT_SNK_DELAY_VALUE_EVT:
+        //     Serial.println("A2DP Event: Report Delay Value (A2DP SRC)");
+        //     // Handle delay value report (for A2DP SRC) here
+        //     break;
+
+        default:
+            Serial.printf("A2DP Event: Unhandled event %d\n", event);
+            break;
     }
 }
 
-void pair_with_device(const std::string& bdaStr, const std::string& deviceName) {
+//====================================== PAIRING AND CONNECTING ==============================
 
-    Serial.printf("Attempting to pair with device: Name: %s, BDA: %s\n", deviceName.c_str(), bdaStr.c_str());
+// connect to an A2DP device
+void connect_a2dp(esp_bd_addr_t remote_bda) {
+    esp_a2d_sink_connect(remote_bda);
+}
 
-    esp_bd_addr_t bda;
-    stringToBda(bdaStr, bda);
+/* 
+ * Attempts to pair with the BT device using SSP Just Works protocol. 
+ * If that fails, it tries the Legacy pairing protocol. 
+ */
+void pair_with_device(const std::string& bdaStr, esp_bd_addr_t bda) {
+    // You can retrieve the device name from targetDeviceNames using bdaStr if needed
+    auto it = targetDeviceNames.find(bdaStr);
+    if (it != targetDeviceNames.end()) {
+        Serial.printf("Attempting to pair with device: Name: %s, BDA: %s\n", it->second.c_str(), bdaStr.c_str());
+    } else {
+        Serial.printf("Attempting to pair with device: BDA: %s (Name not found in target devices)\n", bdaStr.c_str());
+    }
 
-    // Set ESP32 to use SSP mode
-    // esp_bt_sp_param_t param_type = ESP_BT_SP_IOCAP_MODE;
-    // esp_bt_io_cap_t iocap = ESP_BT_IO_CAP_IO; // Set to DisplayYesNo for devices with display & input capabilities
-    // esp_bt_gap_set_security_param(param_type, &iocap, sizeof(uint8_t));
+    // First, try SSP "Just Works" pairing
+    esp_bt_io_cap_t iocap = ESP_BT_IO_CAP_NONE;
+    esp_bt_gap_set_security_param(ESP_BT_SP_IOCAP_MODE, &iocap, sizeof(uint8_t));
+
+    // Try to connect, which should trigger pairing
+    // Assuming you have a function like esp_a2d_sink_connect(bda) for A2DP
+    Serial.println("about to call esp_a2d_sink_connect(bda)");
+    esp_err_t sspResult = esp_a2d_sink_connect(bda); 
+
+    if (sspResult == ESP_OK) {
+        Serial.println("Connection (and thus pairing) initiated using SSP.");
+        return;
+    } else {
+        Serial.println("Connection using SSP failed. Trying Legacy Pairing...");
+
+        // Setup for legacy pairing. Note: You may need to provide a PIN code for legacy pairing.
+        esp_bt_pin_type_t pinType = ESP_BT_PIN_TYPE_FIXED;
+        esp_bt_pin_code_t pinCode = { '1', '2', '3', '4' }; // This is an example PIN code; adjust as needed.
+        esp_bt_gap_set_pin(pinType, sizeof(pinCode), pinCode);
+
+        // Try to connect again, which should trigger legacy pairing
+        esp_err_t legacyResult = esp_a2d_sink_connect(bda);
+
+        if (legacyResult == ESP_OK) {
+            Serial.println("Connection (and thus pairing) initiated using Legacy Pairing.");
+        } else {
+            Serial.println("Connection using Legacy Pairing also failed. Check device compatibility and distance.");
+        }
+    }
 }
 
 void pair_with_all_discovered_devices() {
     for (auto& pair : discoveredDevices) {
-        pair_with_device(pair.first, pair.second); // Here, pair.first is the BDA string and pair.second is the device name string
+        Serial.printf("Attempting to pair with device: BDA: %s\n", pair.first.c_str());  // Logging the BDA string for clarity
+        pair_with_device(pair.first, pair.second); // Here, pair.first is the BDA string and pair.second is the actual BDA (esp_bd_addr_t)
         vTaskDelay(pdMS_TO_TICKS(2000)); // 2-second delay for clarity and to avoid too rapid consecutive actions
     }
     Serial.println("DONE Attempting to pair.");
 }
+
+//====================================== END PAIRING AND CONNECTING ==============================
 
 //helper method for debugging -- converts numeric events types to readable strings
 const char* gap_event_to_string(esp_bt_gap_cb_event_t event) {
@@ -357,33 +448,63 @@ const char* gap_event_to_string(esp_bt_gap_cb_event_t event) {
     }
 }
 
-void app_main() {
+void initialize_once() {
+    static bool initialized = false; // This will be set to true once the function runs.
+
+    if (initialized) {
+        Serial.println("Erroneous attempt to initialize more than once. Returning.");
+        return; // Exit if initialization has already been done.
+    }
+
+    // Place your one-time initialization code here.
     Initialize_Stack();
-    Start_Discovery();
 
-//    while(1) { // Forever loop to try and pair with the devices
-        if (isDiscoveryComplete) {
-            Serial.println("Discovery complete. Initiating pairing...");
-            pair_with_all_discovered_devices();
-            isDiscoveryComplete = false;  // Reset the flag to avoid re-pairing in this example
-        }
-        vTaskDelay(pdMS_TO_TICKS(1000));  // Delay for a second before checking again
-//    }
-
-    //register BLE callback
+    // Register BLE GAP callback, if you're keeping this for now.
     esp_err_t ret = esp_ble_gap_register_callback(ble_gap_callback);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to register BLE GAP callback. Error: %d", ret);
+    } else {
+        Serial.println("Register BLE gap callback SUCCEEDED");
     }
-    Serial.println("Register BLE gap callback SUCCEEDED");
 
     start_ble_scan();
-    compareAndReportMatches();
 
+    // Mark initialization as done.
+    initialized = true;
+    Serial.println("Initialization complete.");
 }
 
+void app_main() {
+    // Ensure one-time initialization
+    initialize_once();
+
+    // Start Discovery once
+    Start_Discovery();
+
+    // Main loop
+    while(1) {
+        if (isDiscoveryComplete) {
+            Serial.println("Discovery complete. Initiating pairing...");
+            pair_with_all_discovered_devices();
+            isDiscoveryComplete = false;  
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));  // Delay for a second before checking again
+    }
+
+    compareAndReportMatches();
+}
 
 //====================================== START BLE CODE ==============================
+
+static void stop_ble_scan_callback(TimerHandle_t xTimer) {
+  esp_ble_gap_stop_scanning();
+
+  if (scanTimer != NULL) {
+    xTimerStop(scanTimer, 0);  // Stop the timer if it's still running
+    xTimerDelete(scanTimer, 0);  // Delete the timer to free up the resources
+    scanTimer = NULL;  // Reset the timer handle
+  }
+}
 
 void ble_gap_callback(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) {
     switch(event) {
@@ -452,11 +573,10 @@ void ble_scan_callback(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
         break;
 
     case ESP_GAP_BLE_SCAN_START_COMPLETE_EVT:
-        // Scan start complete event
-        if (param->scan_start_cmpl.status == ESP_BT_STATUS_SUCCESS) {
-            Serial.println("BLE Device Scanning...");
+        if(param->scan_start_cmpl.status == ESP_BT_STATUS_SUCCESS) {
+            Serial.println("BLE Scan started successfully.");
         } else {
-            Serial.println("Failed to start BLE scanning");
+            Serial.println("BLE Scan start failed.");
         }
         break;
 
@@ -487,6 +607,22 @@ void ble_scan_callback(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
 }
 
 void start_ble_scan() {
+
+    // Create the ble scan timer which stops BLE scanning after BLE_SCAN_DURATION
+    if (scanTimer == NULL) {
+        scanTimer = xTimerCreate("scanTimer", pdMS_TO_TICKS(BLE_SCAN_DURATION), pdFALSE, (void *)0, stop_ble_scan_callback);
+        if (scanTimer == NULL) {
+            Serial.println("Failed to create BLE scan timer. BLE scanning aborted");
+            return;
+        }
+    }
+
+    // Start the timer and check for any errors
+    if (xTimerStart(scanTimer, 0) != pdPASS) {
+        Serial.println("Failed to start BLE scan timer. BLE scanning aborted");
+        return;
+    }
+
     esp_ble_gap_register_callback(ble_scan_callback);
     
     static esp_ble_scan_params_t ble_scan_params = {
@@ -498,6 +634,7 @@ void start_ble_scan() {
     };
     esp_ble_gap_set_scan_params(&ble_scan_params);
 }
+
 
 void compareAndReportMatches() {
     Serial.println("Comparing BLE discovered devices with target BT devices...");
@@ -654,11 +791,6 @@ std::string bdaToString(const esp_bd_addr_t bda) {
     char bda_str[18];
     sprintf(bda_str, "%02X:%02X:%02X:%02X:%02X:%02X", bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]);
     return std::string(bda_str);
-}
-
-// Convert string representation of BDA to esp_bd_addr_t
-void stringToBda(const std::string& bda_string, esp_bd_addr_t& bda) {
-    sscanf(bda_string.c_str(), "%02x:%02x:%02x:%02x:%02x:%02x", &bda[0], &bda[1], &bda[2], &bda[3], &bda[4], &bda[5]);
 }
 
 //====================================== END UTILITIES ==============================
