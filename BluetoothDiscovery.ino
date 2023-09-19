@@ -27,6 +27,11 @@
 #include "esp_a2dp_api.h"
 #include "esp_avrc_api.h"
 
+//======BLE Inlcudes
+#include "esp_gap_ble_api.h"
+#include "esp_bt_defs.h"
+
+
 #define TAG "ESP32_PAIRING"
 #define TARGET_DEVICE_NAME "TargetDevice"
 bool device_found = false;
@@ -123,7 +128,7 @@ void Initialize_Stack() {
 
     //register A2DP callback:
     esp_a2d_register_callback(a2dp_callback);
-
+    
     // Set device name
     esp_bt_dev_set_device_name("ESP32_Device");
 }
@@ -150,7 +155,7 @@ void Start_Discovery() {
  */
 void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param) {
     // for debugging - print all events right before the switch statement
-    Serial.printf("Received GAP event: %s\n", gap_event_to_string(event));
+    Serial.printf(".....................................................................> Received GAP event: %s\n", gap_event_to_string(event));
 
     switch (event) {
         case ESP_BT_GAP_DISC_RES_EVT: {
@@ -160,12 +165,12 @@ void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
                 param->disc_res.bda[3], param->disc_res.bda[4], param->disc_res.bda[5]);
 
             // Print every discovered device for debugging
-            Serial.printf("Discovered device BDA: %s\n", bda_str);
+            // Serial.printf("Discovered device BDA: %s\n", bda_str);
 
             //now we'll check to see if its one of the devices we want to connect to
             auto it = deviceNames.find(bda_str);
             if (it != deviceNames.end() && discoveredDevices.find(bda_str) == discoveredDevices.end()) {
-                Serial.printf("Found target device: %s (BDA: %s)\n", it->second.c_str(), bda_str);
+                Serial.printf("------------------ Found target device: %s (BDA: %s)\n", it->second.c_str(), bda_str);
                 
                 // Store the BDA and its logical name in the discoveredDevices map
                 memcpy(discoveredDevices[bda_str], param->disc_res.bda, sizeof(esp_bd_addr_t));
@@ -174,7 +179,7 @@ void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
 
             // If we've discovered all devices in our map, stop discovery
             if (discoveredDevices.size() == deviceNames.size()) {
-                Serial.println("Found all target devices. Stopping discovery...");
+                Serial.println("------------------ Found all target devices. Stopping discovery...");
                 esp_bt_gap_cancel_discovery();
                 isDiscoveryComplete = true;
             }
@@ -263,7 +268,46 @@ void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
             Serial.println("Config EIR data event triggered.");
             break;
 
+        case ESP_BT_GAP_MODE_CHG_EVT:
+            Serial.println("ESP_BT_GAP_MODE_CHG_EVT: Mode change event triggered.");
+            Serial.printf("Device BDA: %02X:%02X:%02X:%02X:%02X:%02X\n", 
+                          param->mode_chg.bda[0], param->mode_chg.bda[1], param->mode_chg.bda[2], 
+                          param->mode_chg.bda[3], param->mode_chg.bda[4], param->mode_chg.bda[5]);
+            Serial.printf("New mode: %d\n", param->mode_chg.mode);
+            break;
+
+        //------added
+        case ESP_BT_GAP_READ_REMOTE_NAME_EVT:
+            Serial.println("Received GAP event: ESP_BT_GAP_READ_REMOTE_NAME_EVT");
+            Serial.println("Remote name read event triggered.");
+            break;
+
+        case ESP_BT_GAP_REMOVE_BOND_DEV_COMPLETE_EVT:
+            Serial.println("Received GAP event: ESP_BT_GAP_REMOVE_BOND_DEV_COMPLETE_EVT");
+            Serial.println("Bonded device removal complete.");
+            break;
+
+        case ESP_BT_GAP_QOS_CMPL_EVT:
+            Serial.println("Received GAP event: ESP_BT_GAP_QOS_CMPL_EVT");
+            Serial.println("Quality of Service (QoS) complete.");
+            break;
+
+        case ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT:
+            Serial.println("Received GAP event: ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT");
+            Serial.println("ACL connection complete status.");
+            break;
+
+        case ESP_BT_GAP_ACL_DISCONN_CMPL_STAT_EVT:
+            Serial.println("Received GAP event: ESP_BT_GAP_ACL_DISCONN_CMPL_STAT_EVT");
+            Serial.println("ACL disconnection complete status.");
+            break;
+        //------end added
+
         // ... (other cases remain unchanged)
+
+        default: 
+            static char unknownEventStr[50];
+            snprintf(unknownEventStr, sizeof(unknownEventStr), "UNKNOWN_EVENT (Value: %d)", event);
     }
 }
 
@@ -281,23 +325,37 @@ void a2dp_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *a2d) {
 }
 
 void pair_with_device(const uint8_t* bda, const std::string& deviceName) {
-    // Declare the pin_code here
-    esp_bt_pin_code_t pin_code = {'1', '2', '3', '4'};
-
-    // Your pairing code here...
+    // Logging device details
     Serial.printf("Attempting to pair with device: %s (BDA: %02X:%02X:%02X:%02X:%02X:%02X)\n", 
                   deviceName.c_str(), bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]);
-    
-    // Set the PIN
-    esp_bt_gap_set_pin(ESP_BT_PIN_TYPE_FIXED, 4, pin_code);
-    
-    // Initiate pairing
-    esp_err_t ret = esp_bt_gap_pin_reply(const_cast<uint8_t*>(bda), true, 4, pin_code);
-    if (ret != ESP_OK) {
-        Serial.printf("Error in pairing with BDA: %02X:%02X:%02X:%02X:%02X:%02X. Error code: %s\n", 
-                      bda[0], bda[1], bda[2], bda[3], bda[4], bda[5], esp_err_to_name(ret));
-    }
+
+    // Set ESP32 to use SSP mode
+    // esp_bt_sp_param_t param_type = ESP_BT_SP_IOCAP_MODE;
+    // esp_bt_io_cap_t iocap = ESP_BT_IO_CAP_IO; // Set to DisplayYesNo for devices with display & input capabilities
+    // esp_bt_gap_set_security_param(param_type, &iocap, sizeof(uint8_t));
+
+
 }
+
+
+// void pair_with_device(const uint8_t* bda, const std::string& deviceName) {
+//     // Declare the pin_code here
+//     esp_bt_pin_code_t pin_code = {'1', '2', '3', '4'};
+
+//     // Your pairing code here...
+//     Serial.printf("Attempting to pair with device: %s (BDA: %02X:%02X:%02X:%02X:%02X:%02X)\n", 
+//                   deviceName.c_str(), bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]);
+    
+//     // Set the PIN
+//     esp_bt_gap_set_pin(ESP_BT_PIN_TYPE_FIXED, 4, pin_code);
+    
+//     // Initiate pairing
+//     esp_err_t ret = esp_bt_gap_pin_reply(const_cast<uint8_t*>(bda), true, 4, pin_code);
+//     if (ret != ESP_OK) {
+//         Serial.printf("Error in pairing with BDA: %02X:%02X:%02X:%02X:%02X:%02X. Error code: %s\n", 
+//                       bda[0], bda[1], bda[2], bda[3], bda[4], bda[5], esp_err_to_name(ret));
+//     }
+// }
 
 void pair_with_all_discovered_devices() {
     for (auto& pair : discoveredDevices) {
@@ -305,6 +363,7 @@ void pair_with_all_discovered_devices() {
         // pair_with_device(const_cast<uint8_t*>(pair.second), pair.first);
         vTaskDelay(pdMS_TO_TICKS(2000)); // 2-second delay for clarity and to avoid too rapid consecutive actions
     }
+    Serial.println("DONE Attempting to pair.");
 }
 
 //helper method for debugging -- converts numeric events types to readable strings
@@ -334,6 +393,23 @@ const char* gap_event_to_string(esp_bt_gap_cb_event_t event) {
             return "ESP_BT_GAP_SET_AFH_CHANNELS_EVT";
         case ESP_BT_GAP_CONFIG_EIR_DATA_EVT:
             return "ESP_BT_GAP_CONFIG_EIR_DATA_EVT";
+        case ESP_BT_GAP_MODE_CHG_EVT:
+            return "ESP_BT_GAP_MODE_CHG_EVT";
+        case ESP_BT_GAP_READ_REMOTE_NAME_EVT:
+            return "ESP_BT_GAP_READ_REMOTE_NAME_EVT - Remote name read event";
+
+        case ESP_BT_GAP_REMOVE_BOND_DEV_COMPLETE_EVT:
+            return "ESP_BT_GAP_REMOVE_BOND_DEV_COMPLETE_EVT - Bonded device removal complete event";
+
+        case ESP_BT_GAP_QOS_CMPL_EVT:
+            return "ESP_BT_GAP_QOS_CMPL_EVT - Quality of Service (QoS) complete event";
+
+        case ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT:
+            return "ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT - ACL connection complete status event";
+
+        case ESP_BT_GAP_ACL_DISCONN_CMPL_STAT_EVT:
+            return "ESP_BT_GAP_ACL_DISCONN_CMPL_STAT_EVT - ACL disconnection complete status event";
+                    
         default: 
             static char unknownEventStr[50];
             snprintf(unknownEventStr, sizeof(unknownEventStr), "UNKNOWN_EVENT (Value: %d)", event);
@@ -345,15 +421,129 @@ void app_main() {
     Initialize_Stack();
     Start_Discovery();
 
-    while(1) { // Forever loop
+//    while(1) { // Forever loop to try and pair with the devices
         if (isDiscoveryComplete) {
             Serial.println("Discovery complete. Initiating pairing...");
             pair_with_all_discovered_devices();
             isDiscoveryComplete = false;  // Reset the flag to avoid re-pairing in this example
         }
-        vTaskDelay(pdMS_TO_TICKS(500));  // Delay for half a second before checking again
+        vTaskDelay(pdMS_TO_TICKS(1000));  // Delay for a second before checking again
+//    }
+
+    //register BLE callback
+    esp_err_t ret = esp_ble_gap_register_callback(ble_gap_callback);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register BLE GAP callback. Error: %d", ret);
+    }
+    Serial.println("Register BLE gap callback SUCCEEDED");
+
+    start_ble_scan();
+
+}
+
+
+//====================================== START BLE CODE ==============================
+
+void ble_gap_callback(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) {
+    switch(event) {
+        case ESP_GAP_BLE_SCAN_PARAM_SET_COMPLETE_EVT:
+            Serial.println("BLE Scan parameters set complete.");
+            break;
+
+        case ESP_GAP_BLE_SCAN_START_COMPLETE_EVT:
+            if(param->scan_start_cmpl.status == ESP_BT_STATUS_SUCCESS) {
+                Serial.println("BLE Scan started successfully.");
+            } else {
+                Serial.println("BLE Scan start failed.");
+            }
+            break;
+
+        case ESP_GAP_BLE_SCAN_RESULT_EVT:
+            if(param->scan_rst.search_evt == ESP_GAP_SEARCH_INQ_RES_EVT) {
+                Serial.print("BLE Device found, address: ");
+                for(int i = 0; i < ESP_BD_ADDR_LEN; i++) {
+                    Serial.printf("%02x:", param->scan_rst.bda[i]);
+                }
+                Serial.println();
+            }
+            break;
+
+        case ESP_GAP_BLE_SCAN_STOP_COMPLETE_EVT:
+            if(param->scan_stop_cmpl.status == ESP_BT_STATUS_SUCCESS) {
+                Serial.println("BLE Scan stopped successfully.");
+            } else {
+                Serial.println("BLE Scan stop failed.");
+            }
+            break;
+
+        case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
+            Serial.println("BLE Advertise start complete.");
+            break;
+
+        case ESP_GAP_BLE_UPDATE_CONN_PARAMS_EVT:
+            Serial.println("BLE Connection parameters updated.");
+            break;
+
+        // Add cases for other events if needed.
+
+        default:
+            Serial.printf("Unhandled BLE GAP event %d.\n", event);
+            break;
     }
 }
+
+void ble_scan_callback(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) {
+    switch (event) {
+    case ESP_GAP_BLE_SCAN_PARAM_SET_COMPLETE_EVT:
+        // Start scanning when scan parameters are set
+        esp_ble_gap_start_scanning(10);  // scan for 10 seconds
+        break;
+
+    case ESP_GAP_BLE_SCAN_START_COMPLETE_EVT:
+        // Scan start complete event
+        if (param->scan_start_cmpl.status == ESP_BT_STATUS_SUCCESS) {
+            Serial.println("BLE Device Scanning...");
+        } else {
+            Serial.println("Failed to start BLE scanning");
+        }
+        break;
+
+    case ESP_GAP_BLE_SCAN_RESULT_EVT:
+        if (param->scan_rst.search_evt == ESP_GAP_SEARCH_INQ_RES_EVT) {
+            // Found a device
+            Serial.printf("Found BLE device. Address: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                          param->scan_rst.bda[0], param->scan_rst.bda[1], param->scan_rst.bda[2], 
+                          param->scan_rst.bda[3], param->scan_rst.bda[4], param->scan_rst.bda[5]);
+        }
+        break;
+
+    case ESP_GAP_BLE_SCAN_STOP_COMPLETE_EVT:
+        if (param->scan_stop_cmpl.status == ESP_BT_STATUS_SUCCESS) {
+            Serial.println("Scan completed successfully");
+        } else {
+            Serial.println("Failed to stop scanning");
+        }
+        break;
+
+    default:
+        break;
+    }
+}
+
+void start_ble_scan() {
+    esp_ble_gap_register_callback(ble_scan_callback);
+    
+    static esp_ble_scan_params_t ble_scan_params = {
+        .scan_type              = BLE_SCAN_TYPE_ACTIVE,
+        .own_addr_type          = BLE_ADDR_TYPE_PUBLIC,
+        .scan_filter_policy     = BLE_SCAN_FILTER_ALLOW_ALL,
+        .scan_interval          = 0x50,
+        .scan_window            = 0x30,
+    };
+    esp_ble_gap_set_scan_params(&ble_scan_params);
+}
+
+//====================================== END BLE CODE ==============================
 
 void setup() {
   app_main();
