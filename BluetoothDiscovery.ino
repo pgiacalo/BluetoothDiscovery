@@ -9,6 +9,9 @@
 #include <map>
 #include <string.h>
 #include <set>
+#include <algorithm>
+#include <sstream>
+#include <iomanip>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,51 +42,19 @@ bool device_found = false;
 bool isDiscoveryComplete = false;
 
 // a lookup table for the Bluetooth earbuds we want to discover, pair with and connect to.
-std::map<std::string, std::string> deviceNames = {
+std::map<std::string, std::string> targetDeviceNames = {
     // {"74:74:46:ED:07:6B", "Pixel Buds A Series"},
     {"58:FC:C6:6C:0A:03", "TOZO Home"},
     {"54:B7:E5:8C:07:71", "TOZO Mazda"}
     //REMINDER: no trailing comma
 };
 
+//map of discovered device_bda to device_name
 std::map<std::string, esp_bd_addr_t> discoveredDevices;
 
-//Bluetooth Device Address (with is the MAC (Media Access Control))
-esp_bd_addr_t target_device_bda;
-bool target_device_found = false;
-
-void print_ESP32_info(){
-    // Print out general ESP32 information
-    Serial.println();
-    Serial.printf("ESP-IDF Version: %s\n", esp_get_idf_version());
-    
-    esp_chip_info_t chip_info;
-    esp_chip_info(&chip_info);
-    Serial.printf("Chip Model: %d\n", chip_info.model);
-    Serial.printf("Chip Cores: %d\n", chip_info.cores);
-    Serial.printf("Chip Revision: %d\n", chip_info.revision);
-    
-    Serial.printf("Flash Chip Size: %u bytes\n", spi_flash_get_chip_size());
-
-    // Print Bluetooth Controller Information
-    esp_bt_controller_status_t status = esp_bt_controller_get_status();
-    switch (status) {
-        case ESP_BT_CONTROLLER_STATUS_IDLE:
-            Serial.println("BT Controller Status: IDLE");
-            break;
-        case ESP_BT_CONTROLLER_STATUS_INITED:
-            Serial.println("BT Controller Status: INITED");
-            break;
-        case ESP_BT_CONTROLLER_STATUS_ENABLED:
-            Serial.println("BT Controller Status: ENABLED");
-            break;
-        case ESP_BT_CONTROLLER_STATUS_NUM:
-            Serial.println("BT Controller Status: UNKNOWN");
-            break;
-    }
-
-    return;
-}
+//map of BLE discovered devices
+std::map<std::string, esp_bd_addr_t> bleDiscoveredDevices;
+std::map<std::string, std::string> bleDeviceNames;
 
 void Initialize_Stack() {
     esp_err_t ret;
@@ -168,8 +139,8 @@ void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
             // Serial.printf("Discovered device BDA: %s\n", bda_str);
 
             //now we'll check to see if its one of the devices we want to connect to
-            auto it = deviceNames.find(bda_str);
-            if (it != deviceNames.end() && discoveredDevices.find(bda_str) == discoveredDevices.end()) {
+            auto it = targetDeviceNames.find(bda_str);
+            if (it != targetDeviceNames.end() && discoveredDevices.find(bda_str) == discoveredDevices.end()) {
                 Serial.printf("------------------ Found target device: %s (BDA: %s)\n", it->second.c_str(), bda_str);
                 
                 // Store the BDA and its logical name in the discoveredDevices map
@@ -178,7 +149,7 @@ void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
             }
 
             // If we've discovered all devices in our map, stop discovery
-            if (discoveredDevices.size() == deviceNames.size()) {
+            if (discoveredDevices.size() == targetDeviceNames.size()) {
                 Serial.println("------------------ Found all target devices. Stopping discovery...");
                 esp_bt_gap_cancel_discovery();
                 isDiscoveryComplete = true;
@@ -333,33 +304,11 @@ void pair_with_device(const uint8_t* bda, const std::string& deviceName) {
     // esp_bt_sp_param_t param_type = ESP_BT_SP_IOCAP_MODE;
     // esp_bt_io_cap_t iocap = ESP_BT_IO_CAP_IO; // Set to DisplayYesNo for devices with display & input capabilities
     // esp_bt_gap_set_security_param(param_type, &iocap, sizeof(uint8_t));
-
-
 }
-
-
-// void pair_with_device(const uint8_t* bda, const std::string& deviceName) {
-//     // Declare the pin_code here
-//     esp_bt_pin_code_t pin_code = {'1', '2', '3', '4'};
-
-//     // Your pairing code here...
-//     Serial.printf("Attempting to pair with device: %s (BDA: %02X:%02X:%02X:%02X:%02X:%02X)\n", 
-//                   deviceName.c_str(), bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]);
-    
-//     // Set the PIN
-//     esp_bt_gap_set_pin(ESP_BT_PIN_TYPE_FIXED, 4, pin_code);
-    
-//     // Initiate pairing
-//     esp_err_t ret = esp_bt_gap_pin_reply(const_cast<uint8_t*>(bda), true, 4, pin_code);
-//     if (ret != ESP_OK) {
-//         Serial.printf("Error in pairing with BDA: %02X:%02X:%02X:%02X:%02X:%02X. Error code: %s\n", 
-//                       bda[0], bda[1], bda[2], bda[3], bda[4], bda[5], esp_err_to_name(ret));
-//     }
-// }
 
 void pair_with_all_discovered_devices() {
     for (auto& pair : discoveredDevices) {
-        pair_with_device(const_cast<uint8_t*>(pair.second), deviceNames[pair.first]);
+        pair_with_device(const_cast<uint8_t*>(pair.second), targetDeviceNames[pair.first]);
         // pair_with_device(const_cast<uint8_t*>(pair.second), pair.first);
         vTaskDelay(pdMS_TO_TICKS(2000)); // 2-second delay for clarity and to avoid too rapid consecutive actions
     }
@@ -438,6 +387,7 @@ void app_main() {
     Serial.println("Register BLE gap callback SUCCEEDED");
 
     start_ble_scan();
+    compareAndReportMatches();
 
 }
 
@@ -458,21 +408,40 @@ void ble_gap_callback(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *para
             }
             break;
 
-        case ESP_GAP_BLE_SCAN_RESULT_EVT:
-            if(param->scan_rst.search_evt == ESP_GAP_SEARCH_INQ_RES_EVT) {
-                Serial.print("BLE Device found, address: ");
-                for(int i = 0; i < ESP_BD_ADDR_LEN; i++) {
-                    Serial.printf("%02x:", param->scan_rst.bda[i]);
+        case ESP_GAP_BLE_SCAN_RESULT_EVT: {
+            esp_ble_gap_cb_param_t *scan_result = (esp_ble_gap_cb_param_t *)param;
+            
+            // Check if the result is for an inquiry response
+            if (scan_result->scan_rst.search_evt == ESP_GAP_SEARCH_INQ_RES_EVT) {
+                std::string bda_std_string = bdaToString(scan_result->scan_rst.bda);
+                
+                // Check if the device is already in the map
+                if (bleDiscoveredDevices.find(bda_std_string) == bleDiscoveredDevices.end()) {
+                    // Store BDA in bleDiscoveredDevices map
+                    std::copy(scan_result->scan_rst.bda, scan_result->scan_rst.bda + ESP_BD_ADDR_LEN, bleDiscoveredDevices[bda_std_string]);
+                    
+                    // Store device name in bleDeviceNames map
+                    std::string deviceName;
+                    if (scan_result->scan_rst.adv_data_len > 0) {
+                        deviceName = std::string(reinterpret_cast<char*>(scan_result->scan_rst.ble_adv), scan_result->scan_rst.adv_data_len);
+                    } else {
+                        deviceName = "Unknown";
+                    }
+                    bleDeviceNames[bda_std_string] = deviceName;
                 }
-                Serial.println();
             }
             break;
+        }
 
         case ESP_GAP_BLE_SCAN_STOP_COMPLETE_EVT:
-            if(param->scan_stop_cmpl.status == ESP_BT_STATUS_SUCCESS) {
-                Serial.println("BLE Scan stopped successfully.");
+            // Assuming this is when the scanning completes. Adjust as necessary.
+            if (param->scan_stop_cmpl.status == ESP_BT_STATUS_SUCCESS) {
+                Serial.println("BLE scan completed successfully");
             } else {
-                Serial.println("BLE Scan stop failed.");
+                Serial.println("BLE scan failed to stop scanning");
+            }
+            for (const auto& entry : bleDiscoveredDevices) {
+              Serial.printf("Found BLE device. BDA: %s, Name: %s\n", entry.first.c_str(), bdaToString(entry.second).c_str());
             }
             break;
 
@@ -510,20 +479,27 @@ void ble_scan_callback(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
 
     case ESP_GAP_BLE_SCAN_RESULT_EVT:
         if (param->scan_rst.search_evt == ESP_GAP_SEARCH_INQ_RES_EVT) {
-            // Found a device
-            Serial.printf("Found BLE device. Address: %02X:%02X:%02X:%02X:%02X:%02X\n",
-                          param->scan_rst.bda[0], param->scan_rst.bda[1], param->scan_rst.bda[2], 
-                          param->scan_rst.bda[3], param->scan_rst.bda[4], param->scan_rst.bda[5]);
+            char bda_str[18];
+            sprintf(bda_str, "%02X:%02X:%02X:%02X:%02X:%02X",
+                    param->scan_rst.bda[0], param->scan_rst.bda[1], param->scan_rst.bda[2],
+                    param->scan_rst.bda[3], param->scan_rst.bda[4], param->scan_rst.bda[5]);
+            
+            std::string bda_std_string = bda_str;
+
+            if (bleDiscoveredDevices.find(bda_std_string) == bleDiscoveredDevices.end()) {
+                // New device discovered
+                std::copy(param->scan_rst.bda, param->scan_rst.bda + 6, bleDiscoveredDevices[bda_std_string]);
+
+                Serial.printf("Found BLE device. Address: %s, Name: %s\n", bda_str, param->scan_rst.ble_adv[2] == '\0' ? "Unknown" : (char *) &param->scan_rst.ble_adv[2]);
+                
+                // Check if this is one of the target devices
+                if (targetDeviceNames.find(bda_std_string) != targetDeviceNames.end()) {
+                    Serial.printf("---> This is a target device: %s\n", targetDeviceNames[bda_std_string].c_str());
+                }
+            }
         }
         break;
 
-    case ESP_GAP_BLE_SCAN_STOP_COMPLETE_EVT:
-        if (param->scan_stop_cmpl.status == ESP_BT_STATUS_SUCCESS) {
-            Serial.println("Scan completed successfully");
-        } else {
-            Serial.println("Failed to stop scanning");
-        }
-        break;
 
     default:
         break;
@@ -543,7 +519,87 @@ void start_ble_scan() {
     esp_ble_gap_set_scan_params(&ble_scan_params);
 }
 
+void compareAndReportMatches() {
+    Serial.println("Comparing BLE discovered devices with target BT devices...");
+    bool matchesFound = false;
+
+    for (const auto& bleDevice : bleDiscoveredDevices) {
+        if (targetDeviceNames.find(bleDevice.first) != targetDeviceNames.end()) {
+          matchesFound = true;
+          Serial.printf("Match found: BDA: %02x:%02x:%02x:%02x:%02x:%02x, Name (from BT): %s, Name (from BLE): %s\n", 
+                        bleDevice.second[0], bleDevice.second[1], bleDevice.second[2], 
+                        bleDevice.second[3], bleDevice.second[4], bleDevice.second[5], 
+                        targetDeviceNames[bleDevice.first].c_str(), 
+                        bleDevice.first.c_str());
+          
+        }
+    }
+    if (!matchesFound){
+      Serial.println("BLE Discovery Found NO Devices that match the Target Devices");
+    }
+}
+
 //====================================== END BLE CODE ==============================
+
+
+//====================================== UTILITIES ==============================
+
+std::string mapToString(const std::map<std::string, std::string>& deviceMap) {
+    std::stringstream ss;
+    
+    for (const auto& entry : deviceMap) {
+        ss << "Key: " << entry.first << ", Value: " << entry.second << "\n";
+    }
+    
+    return ss.str();
+}
+
+
+void print_ESP32_info(){
+    // Print out general ESP32 information
+    Serial.println();
+    Serial.printf("ESP-IDF Version: %s\n", esp_get_idf_version());
+    
+    esp_chip_info_t chip_info;
+    esp_chip_info(&chip_info);
+    Serial.printf("Chip Model: %d\n", chip_info.model);
+    Serial.printf("Chip Cores: %d\n", chip_info.cores);
+    Serial.printf("Chip Revision: %d\n", chip_info.revision);
+    
+    Serial.printf("Flash Chip Size: %u bytes\n", spi_flash_get_chip_size());
+
+    // Print Bluetooth Controller Information
+    esp_bt_controller_status_t status = esp_bt_controller_get_status();
+    switch (status) {
+        case ESP_BT_CONTROLLER_STATUS_IDLE:
+            Serial.println("BT Controller Status: IDLE");
+            break;
+        case ESP_BT_CONTROLLER_STATUS_INITED:
+            Serial.println("BT Controller Status: INITED");
+            break;
+        case ESP_BT_CONTROLLER_STATUS_ENABLED:
+            Serial.println("BT Controller Status: ENABLED");
+            break;
+        case ESP_BT_CONTROLLER_STATUS_NUM:
+            Serial.println("BT Controller Status: UNKNOWN");
+            break;
+    }
+
+    return;
+}
+
+std::string bdaToString(const esp_bd_addr_t bda) {
+    std::ostringstream oss;
+    for (int i = 0; i < ESP_BD_ADDR_LEN; ++i) {
+        oss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(bda[i]);
+        if (i != ESP_BD_ADDR_LEN - 1) {
+            oss << ":";
+        }
+    }
+    return oss.str();
+}
+//====================================== END UTILITIES ==============================
+
 
 void setup() {
   app_main();
