@@ -80,7 +80,7 @@ struct BleAdvertisementData {
     std::vector<uint8_t> serviceUUIDs;
 };
 
-static xTimerHandle scanTimer = NULL;
+static TimerHandle_t scanTimer = NULL;
 const int BLE_SCAN_DURATION = 10000; // milliseconds
 
 // ============= function prototypes ===============
