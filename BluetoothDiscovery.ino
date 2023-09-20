@@ -2,9 +2,23 @@
  * ESP32 code for Bluetooth testing (using Arduino IDE)
  * This code is designed to discover an A2DP bluetooth device, pair with it, and then connect. 
  * So far, this code is discovering devices. 
+ * 
+ * When working with the ESP-IDF (or similar SDKs), the steps to establish an SCO connection might look like this:
+ * 
+ * 1) Initialize the Bluetooth stack.
+ * 2 Register necessary callbacks (for events like connection status changes).
+ * 3) Start device discovery to find the target device.
+ * 4) Pair with the target device.
+ * 5) Once paired, establish an ACL connection.
+ *      - ACL (Asynchronous Connection-Less): 
+ *      - This is used for the transmission of data and control information. 
+ *      - It is typically used for non-time-sensitive data transmission, such as file transfers or general data packets. 
+ *      - ACL channels can operate in a point-to-multipoint configuration, meaning one master device can communicate with multiple slave devices.
+ * 6) Request an SCO connection using the appropriate API.
+ *      - SCO (Synchronous Connection-Oriented): 
+ *      - This is primarily used for voice communication. 
+ *      - SCO channels are time-bound and operate in a point-to-point configuration.
  */
-
-#include <Arduino.h>
 
 #include <map>
 #include <vector>
@@ -67,6 +81,7 @@ struct BleAdvertisementData {
 
 static xTimerHandle scanTimer = NULL;
 const int BLE_SCAN_DURATION = 10000; // milliseconds
+
 void Initialize_Stack() {
     const char* TAG = "INIT STACK";
 
