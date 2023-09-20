@@ -20,7 +20,9 @@
  *      - SCO channels are time-bound and operate in a point-to-point configuration.
  */
 
+#ifdef ARDUINO
  #include "Arduino.h"
+#endif
 
 extern "C" {
     #include "freertos/FreeRTOS.h"
@@ -584,30 +586,6 @@ void initialize_once(void) {
     ESP_LOGI(TAG, "Initialization complete.");
 }
 
-//wrapped in extern, because this is a .cpp file
-extern "C" {
-    void my_app_main(void) {
-        const char* TAG = "APP_MAIN";
-
-        // Ensure one-time initialization
-        initialize_once();
-
-        // Start Discovery once
-        Start_Discovery();
-
-        // Main loop
-        while(1) {
-            if (isDiscoveryComplete) {
-                ESP_LOGI(TAG, "Discovery complete. Initiating pairing...");
-                pair_with_all_discovered_devices();
-                isDiscoveryComplete = false;  
-            }
-            vTaskDelay(pdMS_TO_TICKS(1000));  // Delay for a second before checking again
-        }
-
-        compareAndReportMatches();
-    }
-}
 
 
 //====================================== START BLE CODE ==============================
@@ -931,12 +909,43 @@ std::string bdaToString(const esp_bd_addr_t bda) {
 
 //====================================== END UTILITIES ==============================
 
+void commonInitialization(){
+        const char* TAG = "APP_MAIN";
 
-void setup(void) {
-  my_app_main();
+        // Ensure one-time initialization
+        initialize_once();
+
+        // Start Discovery once
+        Start_Discovery();
+
+        // Main loop
+        while(1) {
+            if (isDiscoveryComplete) {
+                ESP_LOGI(TAG, "Discovery complete. Initiating pairing...");
+                pair_with_all_discovered_devices();
+                isDiscoveryComplete = false;  
+            }
+            vTaskDelay(pdMS_TO_TICKS(1000));  // Delay for a second before checking again
+        }
+
+        compareAndReportMatches();
 }
 
-void loop(void) {
-    // Code to be run repeatedly here
+#ifdef ARDUINO
+void setup() {
+    // Arduino-specific initialization
+    commonInitialization();
 }
 
+void loop() {
+    // Arduino-specific continuous operation
+
+}
+#else
+//wrapped in extern, because this is a .cpp file
+extern "C" {
+    void app_main(void) {
+        commonInitialization
+    }
+}
+#endif
