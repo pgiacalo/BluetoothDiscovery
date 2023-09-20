@@ -91,6 +91,7 @@ static TimerHandle_t scanTimer = NULL;
 const int BLE_SCAN_DURATION = 10000; // milliseconds
 
 // ============= function prototypes ===============
+void commonInitialization(void);
 void Initialize_Stack(void);
 void Start_Discovery(void);
 void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param);
@@ -909,7 +910,7 @@ std::string bdaToString(const esp_bd_addr_t bda) {
 
 //====================================== END UTILITIES ==============================
 
-void commonInitialization(){
+void commonInitialization(void){
         const char* TAG = "APP_MAIN";
 
         // Ensure one-time initialization
@@ -945,7 +946,7 @@ void loop() {
 //wrapped in extern, because this is a .cpp file
 extern "C" {
     void app_main(void) {
-        commonInitialization
+        commonInitialization();
     }
 }
 #endif
