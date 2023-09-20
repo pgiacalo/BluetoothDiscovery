@@ -36,6 +36,12 @@
 #include "esp_gap_ble_api.h"
 #include "esp_bt_defs.h"
 
+
+#define MAX_RETRY_COUNT 3
+static int retryCount = 0;
+
+bool BLE_SCAN_ON = false;
+
 bool device_found = false;
 
 bool isDiscoveryComplete = false;
@@ -253,10 +259,32 @@ void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
             ESP_LOGI("app_gap_callback", "Quality of Service (QoS) complete.");
             break;
 
-        case ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT:
-            ESP_LOGI("app_gap_callback", "Received GAP event: ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT");
-            ESP_LOGI("app_gap_callback", "ACL connection complete status.");
-            break;
+case ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT:
+    ESP_LOGI("app_gap_callback", "Received GAP event: ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT");
+
+    // Assuming 'param' is the name of the event parameter
+    if (param && param->acl_conn_cmpl_stat.bda) {
+        std::string bda_string = bdaToString(param->acl_conn_cmpl_stat.bda);
+        
+        const char* device_name = "Unknown Device Name";
+        // Look for the BDA in the map
+        if (targetDeviceNames.count(bda_string)) {
+            device_name = targetDeviceNames[bda_string].c_str();
+        }
+        
+        const char* statusDescription = getEspBtStatusDescription(param->acl_conn_cmpl_stat.stat);
+        
+        if (param->acl_conn_cmpl_stat.stat == ESP_BT_STATUS_SUCCESS) {
+            ESP_LOGI("app_gap_callback", "CONNECTION SUCCESS: connected to device: %s, %s", device_name, bda_string.c_str());
+        } else {
+            ESP_LOGI("app_gap_callback", "CONNECTION FAILED: device: %s (%s), status: %s", device_name, bda_string.c_str(), statusDescription);
+        }
+
+    } else {
+        ESP_LOGE("app_gap_callback", "Could not retrieve BDA from event.");
+    }
+    break;
+
 
         case ESP_BT_GAP_ACL_DISCONN_CMPL_STAT_EVT:
             ESP_LOGI("app_gap_callback", "Received GAP event: ESP_BT_GAP_ACL_DISCONN_CMPL_STAT_EVT");
@@ -322,6 +350,44 @@ void a2d_sink_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param) {
             break;
     }
 }
+
+const char* getEspBtStatusDescription(esp_bt_status_t status) {
+    switch (status) {
+        case ESP_BT_STATUS_SUCCESS:       return "Success";
+        case ESP_BT_STATUS_FAIL:          return "Fail";
+        case ESP_BT_STATUS_NOT_READY:     return "Not Ready";
+        case ESP_BT_STATUS_NOMEM:         return "No Memory";
+        case ESP_BT_STATUS_BUSY:          return "Busy";
+        case ESP_BT_STATUS_DONE:          return "Done";
+        case ESP_BT_STATUS_UNSUPPORTED:   return "Unsupported";
+        case ESP_BT_STATUS_PARM_INVALID:  return "Parameter Invalid";
+        case ESP_BT_STATUS_UNHANDLED:     return "Unhandled";
+        case ESP_BT_STATUS_AUTH_FAILURE:  return "Authentication Failure";
+        case ESP_BT_STATUS_RMT_DEV_DOWN:  return "Remote Device Down";
+        case ESP_BT_STATUS_AUTH_REJECTED: return "Authentication Rejected";
+        case ESP_BT_STATUS_INVALID_STATIC_RAND_ADDR: return "Invalid Static Random Address";
+        case ESP_BT_STATUS_PENDING:       return "Pending";
+        case ESP_BT_STATUS_UNACCEPT_CONN_INTERVAL: return "Unaccepted Connection Interval";
+        case ESP_BT_STATUS_PARAM_OUT_OF_RANGE: return "Parameter Out Of Range";
+        case ESP_BT_STATUS_TIMEOUT:       return "Timeout";
+        case ESP_BT_STATUS_PEER_LE_DATA_LEN_UNSUPPORTED: return "Peer LE Data Length Unsupported";
+        case ESP_BT_STATUS_CONTROL_LE_DATA_LEN_UNSUPPORTED: return "Control LE Data Length Unsupported";
+        case ESP_BT_STATUS_ERR_ILLEGAL_PARAMETER_FMT: return "Error Illegal Parameter Format";
+        case ESP_BT_STATUS_MEMORY_FULL:   return "Memory Full";
+        case ESP_BT_STATUS_EIR_TOO_LARGE: return "EIR Too Large";
+
+        // For the HCI-related statuses
+        case ESP_BT_STATUS_HCI_SUCCESS:   return "HCI Success (Host Controller Interface)";
+        //... (Continue in this fashion for all the ESP_BT_STATUS_HCI_* error messages)
+        case ESP_BT_STATUS_HCI_MAC_CONNECTION_FAILED: return "HCI MAC Connection Failed (Host Controller Interface)";
+
+        default:
+            static char unknownStatusMessage[50];
+            snprintf(unknownStatusMessage, sizeof(unknownStatusMessage), "Unknown Status (Code: %d)", status);
+            return unknownStatusMessage;
+    }
+}
+
 
 //====================================== PAIRING AND CONNECTING ==============================
 
@@ -448,15 +514,17 @@ void initialize_once() {
     // Place your one-time initialization code here.
     Initialize_Stack();
 
-    // Register BLE GAP callback, if you're keeping this for now.
-    esp_err_t ret = esp_ble_gap_register_callback(ble_gap_callback);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register BLE GAP callback. Error: %d", ret);
-    } else {
-        ESP_LOGI(TAG, "Register BLE gap callback SUCCEEDED");
-    }
+    if (BLE_SCAN_ON){
+      // Register BLE GAP callback, if you're keeping this for now.
+      esp_err_t ret = esp_ble_gap_register_callback(ble_gap_callback);
+      if (ret != ESP_OK) {
+          ESP_LOGE(TAG, "Failed to register BLE GAP callback. Error: %d", ret);
+      } else {
+          ESP_LOGI(TAG, "Register BLE gap callback SUCCEEDED");
+      }
 
-    start_ble_scan();
+      start_ble_scan();
+    }
 
     // Mark initialization as done.
     initialized = true;
