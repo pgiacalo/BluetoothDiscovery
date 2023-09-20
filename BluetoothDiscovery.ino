@@ -19,6 +19,24 @@
  *      - This is primarily used for voice communication. 
  *      - SCO channels are time-bound and operate in a point-to-point configuration.
  */
+extern "C" {
+	#include "freertos/FreeRTOS.h"
+	#include "freertos/task.h"
+	#include "freertos/timers.h"
+	#include "nvs.h"
+	#include "nvs_flash.h"
+	#include "esp_system.h"
+	#include "esp_log.h"
+	#include "esp_bt.h"
+	#include "esp_bt_main.h"
+	#include "esp_bt_device.h"
+	#include "esp_gap_bt_api.h"
+	#include "esp_a2dp_api.h"
+	#include "esp_avrc_api.h"
+	//======BLE Inlcudes
+	#include "esp_gap_ble_api.h"
+	#include "esp_bt_defs.h"
+}
 
 #include <map>
 #include <vector>
@@ -32,23 +50,6 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <inttypes.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "freertos/timers.h"
-#include "nvs.h"
-#include "nvs_flash.h"
-#include "esp_system.h"
-#include "esp_log.h"
-#include "esp_bt.h"
-#include "esp_bt_main.h"
-#include "esp_bt_device.h"
-#include "esp_gap_bt_api.h"
-#include "esp_a2dp_api.h"
-#include "esp_avrc_api.h"
-
-//======BLE Inlcudes
-#include "esp_gap_ble_api.h"
-#include "esp_bt_defs.h"
 
 
 #define MAX_RETRY_COUNT 3
@@ -82,7 +83,32 @@ struct BleAdvertisementData {
 static xTimerHandle scanTimer = NULL;
 const int BLE_SCAN_DURATION = 10000; // milliseconds
 
-void Initialize_Stack() {
+// ============= function prototypes ===============
+void Initialize_Stack(void);
+void Start_Discovery(void);
+void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param);
+void a2d_sink_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param);
+const char* getEspBtStatusDescription(esp_bt_status_t status);
+void pair_with_device(const std::string& bdaStr, esp_bd_addr_t bda);
+void pair_with_all_discovered_devices(void);
+const char* gap_event_to_string(esp_bt_gap_cb_event_t event);
+void initialize_once(void);
+void app_main(void);
+static void stop_ble_scan_callback(TimerHandle_t xTimer);
+void ble_gap_callback(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param);
+void ble_scan_callback(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param);
+void start_ble_scan(void);
+void compareAndReportMatches(void);
+BleAdvertisementData extractBleAdvFields(const uint8_t* ble_adv, uint8_t adv_length);
+void printBleAdvertisementData(const uint8_t* ble_adv, uint8_t adv_length, const std::string& address);
+std::string mapToString(const std::map<std::string, std::string>& deviceMap);
+void print_ESP32_info(void);
+std::string bdaToString(const esp_bd_addr_t bda);
+void setup(void);
+void loop(void);
+// ============= END function prototypes ===============
+
+void Initialize_Stack(void) {
     const char* TAG = "INIT STACK";
 
     esp_err_t ret;
@@ -93,37 +119,34 @@ void Initialize_Stack() {
     // Initialize the BT system
     esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
     if ((ret = esp_bt_controller_init(&bt_cfg)) != ESP_OK) {
-        ESP_LOGE("Initialize_Stack", "Initialize controller failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Initialize controller failed: %s", esp_err_to_name(ret));
         print_ESP32_info();
         return;
     }
-    ESP_LOGI("Initialize_Stack", "Success initializing BT controller");
+    ESP_LOGI(TAG, "Success initializing BT controller");
 
     // Enable bluetooth controller
     ret = esp_bt_controller_enable(ESP_BT_MODE_BTDM);
     if (ret != ESP_OK) {
-      ESP_LOGE("Initialize_Stack", "BT Controller Enable FAILED with error: %s", esp_err_to_name(ret));
+      ESP_LOGE(TAG, "BT Controller Enable FAILED with error: %s", esp_err_to_name(ret));
       print_ESP32_info();
       return;
     } 
-    ESP_LOGI("Initialize_Stack", "ESP_BT_MODE_BTDM SUCCEEDED");
+    ESP_LOGI(TAG, "ESP_BT_MODE_BTDM SUCCEEDED");
 
     if ((ret = esp_bluedroid_init()) != ESP_OK) {
-        ESP_LOGE("Initialize_Stack", "Initialize bluedroid failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Initialize bluedroid failed: %s", esp_err_to_name(ret));
         print_ESP32_info();
         return;
     } 
-    ESP_LOGI("Initialize_Stack", "Initialize bluedroid SUCCEEDED: %s", esp_err_to_name(ret));
+    ESP_LOGI(TAG, "Initialize bluedroid SUCCEEDED: %s", esp_err_to_name(ret));
 
     if ((ret = esp_bluedroid_enable()) != ESP_OK) {
-        ESP_LOGE("Initialize_Stack", "Enable bluedroid failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Enable bluedroid failed: %s", esp_err_to_name(ret));
         print_ESP32_info();
         return;
     } 
-    ESP_LOGI("Initialize_Stack", "Enable bluedroid SUCCEEDED: %s", esp_err_to_name(ret));
-
-
-
+    ESP_LOGI(TAG, "Enable bluedroid SUCCEEDED: %s", esp_err_to_name(ret));
 
     // Initialize A2DP sink
     if (esp_a2d_register_callback(&a2d_sink_callback) != ESP_OK) {
@@ -141,7 +164,7 @@ void Initialize_Stack() {
 
 }
 
-void Start_Discovery() {
+void Start_Discovery(void) {
     // Register GAP callback
     ESP_LOGI("Start_Discovery", "Starting discovery...");
     esp_bt_gap_register_callback(app_gap_callback);
@@ -274,31 +297,31 @@ void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
             ESP_LOGI("app_gap_callback", "Quality of Service (QoS) complete.");
             break;
 
-case ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT:
-    ESP_LOGI("app_gap_callback", "Received GAP event: ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT");
+        case ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT:
+            ESP_LOGI("app_gap_callback", "Received GAP event: ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT");
 
-    // Assuming 'param' is the name of the event parameter
-    if (param && param->acl_conn_cmpl_stat.bda) {
-        std::string bda_string = bdaToString(param->acl_conn_cmpl_stat.bda);
-        
-        const char* device_name = "Unknown Device Name";
-        // Look for the BDA in the map
-        if (targetDeviceNames.count(bda_string)) {
-            device_name = targetDeviceNames[bda_string].c_str();
-        }
-        
-        const char* statusDescription = getEspBtStatusDescription(param->acl_conn_cmpl_stat.stat);
-        
-        if (param->acl_conn_cmpl_stat.stat == ESP_BT_STATUS_SUCCESS) {
-            ESP_LOGI("app_gap_callback", "CONNECTION SUCCESS: connected to device: %s, %s", device_name, bda_string.c_str());
-        } else {
-            ESP_LOGI("app_gap_callback", "CONNECTION FAILED: device: %s (%s), status: %s", device_name, bda_string.c_str(), statusDescription);
-        }
+            // Assuming 'param' is the name of the event parameter
+            if (param && param->acl_conn_cmpl_stat.bda) {
+                std::string bda_string = bdaToString(param->acl_conn_cmpl_stat.bda);
+                
+                const char* device_name = "Unknown Device Name";
+                // Look for the BDA in the map
+                if (targetDeviceNames.count(bda_string)) {
+                    device_name = targetDeviceNames[bda_string].c_str();
+                }
+                
+                const char* statusDescription = getEspBtStatusDescription(param->acl_conn_cmpl_stat.stat);
+                
+                if (param->acl_conn_cmpl_stat.stat == ESP_BT_STATUS_SUCCESS) {
+                    ESP_LOGI("app_gap_callback", "CONNECTION SUCCESS: connected to device: %s, %s", device_name, bda_string.c_str());
+                } else {
+                    ESP_LOGI("app_gap_callback", "CONNECTION FAILED: device: %s (%s), status: %s", device_name, bda_string.c_str(), statusDescription);
+                }
 
-    } else {
-        ESP_LOGE("app_gap_callback", "Could not retrieve BDA from event.");
-    }
-    break;
+            } else {
+                ESP_LOGE("app_gap_callback", "Could not retrieve BDA from event.");
+            }
+            break;
 
 
         case ESP_BT_GAP_ACL_DISCONN_CMPL_STAT_EVT:
@@ -452,7 +475,7 @@ void pair_with_device(const std::string& bdaStr, esp_bd_addr_t bda) {
     }
 }
 
-void pair_with_all_discovered_devices() {
+void pair_with_all_discovered_devices(void) {
     const char* TAG = "PAIR_ALL_DEVICES";
 
     for (auto& pair : discoveredDevices) {
@@ -517,7 +540,8 @@ const char* gap_event_to_string(esp_bt_gap_cb_event_t event) {
           return unknownEventStr;
     }
 }
-void initialize_once() {
+
+void initialize_once(void) {
     const char* TAG = "INIT_ONCE";
     static bool initialized = false; // This will be set to true once the function runs.
 
@@ -546,8 +570,7 @@ void initialize_once() {
     ESP_LOGI(TAG, "Initialization complete.");
 }
 
-
-void app_main() {
+void app_main(void) {
     const char* TAG = "APP_MAIN";
 
     // Ensure one-time initialization
@@ -688,7 +711,7 @@ void ble_scan_callback(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
     }
 }
 
-void start_ble_scan() {
+void start_ble_scan(void) {
     const char* TAG = "BLE_SCAN_START";
 
     // Create the ble scan timer which stops BLE scanning after BLE_SCAN_DURATION
@@ -718,8 +741,7 @@ void start_ble_scan() {
     esp_ble_gap_set_scan_params(&ble_scan_params);
 }
 
-
-void compareAndReportMatches() {
+void compareAndReportMatches(void) {
     const char* TAG = "MATCH_REPORT";
 
     ESP_LOGI(TAG, "Comparing BLE discovered devices with target BT devices...");
@@ -855,7 +877,7 @@ std::string mapToString(const std::map<std::string, std::string>& deviceMap) {
 }
 
 
-void print_ESP32_info() {
+void print_ESP32_info(void) {
     char* TAG = "ESP32 INFO";
     // Print out general ESP32 information
     ESP_LOGI(TAG, "");
@@ -898,11 +920,11 @@ std::string bdaToString(const esp_bd_addr_t bda) {
 //====================================== END UTILITIES ==============================
 
 
-void setup() {
+void setup(void) {
   app_main();
 }
 
-void loop() {
+void loop(void) {
     // Code to be run repeatedly here
 }
 
