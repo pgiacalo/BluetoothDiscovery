@@ -19,24 +19,29 @@
  *      - This is primarily used for voice communication. 
  *      - SCO channels are time-bound and operate in a point-to-point configuration.
  */
+
+ #include "Arduino.h"
+
 extern "C" {
-	#include "freertos/FreeRTOS.h"
-	#include "freertos/task.h"
-	#include "freertos/timers.h"
-	#include "nvs.h"
-	#include "nvs_flash.h"
-	#include "esp_system.h"
-	#include "esp_log.h"
-	#include "esp_bt.h"
-	#include "esp_bt_main.h"
-	#include "esp_bt_device.h"
-	#include "esp_gap_bt_api.h"
-	#include "esp_a2dp_api.h"
-	#include "esp_avrc_api.h"
-	//======BLE Inlcudes
-	#include "esp_gap_ble_api.h"
-	#include "esp_bt_defs.h"
+    #include "freertos/FreeRTOS.h"
+    #include "freertos/task.h"
+    #include "freertos/timers.h"
+    #include "nvs.h"
+    #include "nvs_flash.h"
+    #include "esp_system.h"
+    #include "esp_log.h"
+    #include "esp_bt.h"
+    #include "esp_bt_main.h"
+    #include "esp_bt_device.h"
+    #include "esp_gap_bt_api.h"
+    #include "esp_a2dp_api.h"
+    #include "esp_avrc_api.h"
+    #include "esp_spi_flash.h" // For spi_flash_get_chip_size()
+    //======BLE Inlcudes
+    #include "esp_gap_ble_api.h"
+    #include "esp_bt_defs.h"
 }
+
 
 #include <map>
 #include <vector>
@@ -93,7 +98,6 @@ void pair_with_device(const std::string& bdaStr, esp_bd_addr_t bda);
 void pair_with_all_discovered_devices(void);
 const char* gap_event_to_string(esp_bt_gap_cb_event_t event);
 void initialize_once(void);
-void app_main(void);
 static void stop_ble_scan_callback(TimerHandle_t xTimer);
 void ble_gap_callback(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param);
 void ble_scan_callback(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param);
@@ -203,7 +207,6 @@ void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
                 esp_bt_gap_cancel_discovery();
                 isDiscoveryComplete = true;
             }
-
             break;
         }
 
@@ -218,16 +221,19 @@ void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
             }
             break;
         }
+        
 
-        case ESP_BT_GAP_DISC_STATE_CHANGED_EVT:
+        case ESP_BT_GAP_DISC_STATE_CHANGED_EVT:{
             ESP_LOGI("app_gap_callback", "Discovery state changed.");
             break;
+        }
 
         case ESP_BT_GAP_RMT_SRVCS_EVT: {
             std::string bda_str = bdaToString(param->rmt_srvcs.bda);
             ESP_LOGI("app_gap_callback", "Remote services for BDA: %s", bda_str.c_str());
-            break;
+            break; 
         }
+       
 
         case ESP_BT_GAP_PIN_REQ_EVT: {
             std::string bda_str = bdaToString(param->pin_req.bda);
@@ -238,7 +244,7 @@ void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
             esp_bt_gap_pin_reply(param->pin_req.bda, true, ESP_BT_PIN_CODE_LEN, pin_code);
             break;
         }
-
+        
         case ESP_BT_GAP_CFM_REQ_EVT: {
             std::string bda_str = bdaToString(param->cfm_req.bda);
             ESP_LOGI("app_gap_callback", "Confirm request for passkey: %d, for BDA: %s", param->cfm_req.num_val, bda_str.c_str());
@@ -253,7 +259,7 @@ void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
             ESP_LOGI("app_gap_callback", "Passkey notification: %d, for BDA: %s", param->key_notif.passkey, bda_str.c_str());
             break;
         }
-
+    
         case ESP_BT_GAP_KEY_REQ_EVT: {
             std::string bda_str = bdaToString(param->key_req.bda);
             ESP_LOGI("app_gap_callback", "Passkey request for BDA: %s", bda_str.c_str());
@@ -266,13 +272,15 @@ void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
             break;
         }
 
-        case ESP_BT_GAP_SET_AFH_CHANNELS_EVT:
+        case ESP_BT_GAP_SET_AFH_CHANNELS_EVT:{
             ESP_LOGI("app_gap_callback", "Set AFH channels event triggered.");
             break;
+        }
 
-        case ESP_BT_GAP_CONFIG_EIR_DATA_EVT:
+        case ESP_BT_GAP_CONFIG_EIR_DATA_EVT:{
             ESP_LOGI("app_gap_callback", "Config EIR data event triggered.");
             break;
+        }
 
         case ESP_BT_GAP_MODE_CHG_EVT: {
             std::string bda_str = bdaToString(param->mode_chg.bda);
@@ -282,26 +290,29 @@ void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
             break;
         }
 
-        case ESP_BT_GAP_READ_REMOTE_NAME_EVT:
+        case ESP_BT_GAP_READ_REMOTE_NAME_EVT:{
             ESP_LOGI("app_gap_callback", "Received GAP event: ESP_BT_GAP_READ_REMOTE_NAME_EVT");
             ESP_LOGI("app_gap_callback", "Remote name read event triggered.");
             break;
+        }
 
-        case ESP_BT_GAP_REMOVE_BOND_DEV_COMPLETE_EVT:
+        case ESP_BT_GAP_REMOVE_BOND_DEV_COMPLETE_EVT:{
             ESP_LOGI("app_gap_callback", "Received GAP event: ESP_BT_GAP_REMOVE_BOND_DEV_COMPLETE_EVT");
             ESP_LOGI("app_gap_callback", "Bonded device removal complete.");
             break;
+        }
 
-        case ESP_BT_GAP_QOS_CMPL_EVT:
+        case ESP_BT_GAP_QOS_CMPL_EVT:{
             ESP_LOGI("app_gap_callback", "Received GAP event: ESP_BT_GAP_QOS_CMPL_EVT");
             ESP_LOGI("app_gap_callback", "Quality of Service (QoS) complete.");
             break;
+        }
 
-        case ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT:
+        case ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT:{
             ESP_LOGI("app_gap_callback", "Received GAP event: ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT");
 
-            // Assuming 'param' is the name of the event parameter
-            if (param && param->acl_conn_cmpl_stat.bda) {
+            // Checking only if 'param' is not NULL
+            if (param) {
                 std::string bda_string = bdaToString(param->acl_conn_cmpl_stat.bda);
                 
                 const char* device_name = "Unknown Device Name";
@@ -322,20 +333,23 @@ void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
                 ESP_LOGE("app_gap_callback", "Could not retrieve BDA from event.");
             }
             break;
+        }
 
-
-        case ESP_BT_GAP_ACL_DISCONN_CMPL_STAT_EVT:
+        case ESP_BT_GAP_ACL_DISCONN_CMPL_STAT_EVT:{
             ESP_LOGI("app_gap_callback", "Received GAP event: ESP_BT_GAP_ACL_DISCONN_CMPL_STAT_EVT");
             ESP_LOGI("app_gap_callback", "ACL disconnection complete status.");
             break;
+        }
 
-        default: 
+        default: {
             ESP_LOGW("app_gap_callback", "UNKNOWN_EVENT (Value: %d)", event);
+        }
     }
 }
 
 void a2d_sink_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param) {
-    const char* TAG = "A2D SINK CALLBACK";
+    const char* TAG;    
+    TAG = "A2D SINK CALLBACK";
 
     switch (event) {
         case ESP_A2D_CONNECTION_STATE_EVT:
@@ -570,26 +584,29 @@ void initialize_once(void) {
     ESP_LOGI(TAG, "Initialization complete.");
 }
 
-void app_main(void) {
-    const char* TAG = "APP_MAIN";
+//wrapped in extern, because this is a .cpp file
+extern "C" {
+    void my_app_main(void) {
+        const char* TAG = "APP_MAIN";
 
-    // Ensure one-time initialization
-    initialize_once();
+        // Ensure one-time initialization
+        initialize_once();
 
-    // Start Discovery once
-    Start_Discovery();
+        // Start Discovery once
+        Start_Discovery();
 
-    // Main loop
-    while(1) {
-        if (isDiscoveryComplete) {
-            ESP_LOGI(TAG, "Discovery complete. Initiating pairing...");
-            pair_with_all_discovered_devices();
-            isDiscoveryComplete = false;  
+        // Main loop
+        while(1) {
+            if (isDiscoveryComplete) {
+                ESP_LOGI(TAG, "Discovery complete. Initiating pairing...");
+                pair_with_all_discovered_devices();
+                isDiscoveryComplete = false;  
+            }
+            vTaskDelay(pdMS_TO_TICKS(1000));  // Delay for a second before checking again
         }
-        vTaskDelay(pdMS_TO_TICKS(1000));  // Delay for a second before checking again
-    }
 
-    compareAndReportMatches();
+        compareAndReportMatches();
+    }
 }
 
 
@@ -693,9 +710,7 @@ void ble_scan_callback(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
                 // New device discovered
                 bleDiscoveredDevices[bda_std_string] = bda_std_string;  // Store the BDA string as both key and value
 
-                ESP_LOGI(TAG, "Found BLE device. Address: %s, Name: %s", 
-                              bda_std_string.c_str(), 
-                              param->scan_rst.ble_adv[2] == '\0' ? "Unknown" : (char *) &param->scan_rst.ble_adv[2]);
+                ESP_LOGI(TAG, "Found BLE device. Address: %s, Name: %s", bda_std_string.c_str(), param->scan_rst.ble_adv[2] == '\0' ? "Unknown" : (char *) &param->scan_rst.ble_adv[2]);
                 
                 // Check if this is one of the target devices
                 if (targetDeviceNames.find(bda_std_string) != targetDeviceNames.end()) {
@@ -750,10 +765,7 @@ void compareAndReportMatches(void) {
     for (const auto& bleDevice : bleDiscoveredDevices) {
         if (targetDeviceNames.find(bleDevice.first) != targetDeviceNames.end()) {
             matchesFound = true;
-            ESP_LOGI(TAG, "Match found: BDA: %s, Name (from BT): %s, Name (from BLE): %s", 
-                          bleDevice.first.c_str(),
-                          targetDeviceNames[bleDevice.first].c_str(), 
-                          bleDevice.second.c_str());
+            ESP_LOGI(TAG, "Match found: BDA: %s, Name (from BT): %s, Name (from BLE): %s", bleDevice.first.c_str(), targetDeviceNames[bleDevice.first].c_str(), bleDevice.second.c_str());
         }
     }
 
@@ -883,11 +895,11 @@ void print_ESP32_info(void) {
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "ESP-IDF Version: %s", esp_get_idf_version());
     
-    esp_chip_info_t chip_info;
-    esp_chip_info(&chip_info);
-    ESP_LOGI(TAG, "Chip Model: %d", chip_info.model);
-    ESP_LOGI(TAG, "Chip Cores: %d", chip_info.cores);
-    ESP_LOGI(TAG, "Chip Revision: %d", chip_info.revision);
+    // esp_chip_info_t chip_info;
+    // esp_chip_info(&chip_info);
+    // ESP_LOGI(TAG, "Chip Model: %d", chip_info.model);
+    // ESP_LOGI(TAG, "Chip Cores: %d", chip_info.cores);
+    // ESP_LOGI(TAG, "Chip Revision: %d", chip_info.revision);
     
     ESP_LOGI(TAG, "Flash Chip Size: %u bytes", spi_flash_get_chip_size());
 
@@ -921,7 +933,7 @@ std::string bdaToString(const esp_bd_addr_t bda) {
 
 
 void setup(void) {
-  app_main();
+  my_app_main();
 }
 
 void loop(void) {
