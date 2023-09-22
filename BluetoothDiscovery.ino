@@ -21,7 +21,10 @@
  */
 
 #ifdef ARDUINO
- #include "Arduino.h"
+  #include "Arduino.h"
+  #include "esp_spi_flash.h" // deprecated. use spi_flash_mmap.h (For spi_flash_get_chip_size())
+#elif defined(ESP_PLATFORM)
+  #include "spi_flash_mmap.h"
 #endif
 
 extern "C" {
@@ -38,12 +41,10 @@ extern "C" {
     #include "esp_gap_bt_api.h"
     #include "esp_a2dp_api.h"
     #include "esp_avrc_api.h"
-    #include "esp_spi_flash.h" // For spi_flash_get_chip_size()
     //======BLE Inlcudes
     #include "esp_gap_ble_api.h"
     #include "esp_bt_defs.h"
 }
-
 
 #include <map>
 #include <vector>
@@ -59,8 +60,7 @@ extern "C" {
 #include <inttypes.h>
 
 
-#define MAX_RETRY_COUNT 3
-static int retryCount = 0;
+#define MAX_RETRY_COUNT 10
 
 bool BLE_SCAN_ON = false;
 
@@ -125,14 +125,22 @@ void Initialize_Stack(void) {
 
     // Initialize the BT system
     esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
-    if ((ret = esp_bt_controller_init(&bt_cfg)) != ESP_OK) {
+    ret =esp_bt_controller_init(&bt_cfg);
+
+    if (ret != ESP_OK) {        
         ESP_LOGE(TAG, "Initialize controller failed: %s", esp_err_to_name(ret));
         print_ESP32_info();
         return;
     }
     ESP_LOGI(TAG, "Success initializing BT controller");
 
-    // Enable bluetooth controller
+    // Enable the bluetooth controllerin a certain mode. 
+    // Mode choices are:
+        // ESP_BT_MODE_IDLE: No Bluetooth functionality is enabled.
+        // ESP_BT_MODE_BLE: Only BLE functionality is enabled.
+        // ESP_BT_MODE_CLASSIC_BT: Only classic Bluetooth functionality is enabled.
+        // ESP_BT_MODE_BTDM: Both BLE and classic Bluetooth are enabled.
+
     ret = esp_bt_controller_enable(ESP_BT_MODE_BTDM);
     if (ret != ESP_OK) {
       ESP_LOGE(TAG, "BT Controller Enable FAILED with error: %s", esp_err_to_name(ret));
@@ -206,7 +214,7 @@ void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
             }
 
             if (discoveredDevices.size() == targetDeviceNames.size()) {
-                ESP_LOGI("app_gap_callback", "------------------ Found all target devices. Stopping discovery...");
+                ESP_LOGI("app_gap_callback", "----------- Found all target devices. Stopping discovery...");
                 esp_bt_gap_cancel_discovery();
                 isDiscoveryComplete = true;
             }
@@ -250,7 +258,8 @@ void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
         
         case ESP_BT_GAP_CFM_REQ_EVT: {
             std::string bda_str = bdaToString(param->cfm_req.bda);
-            ESP_LOGI("app_gap_callback", "Confirm request for passkey: %d, for BDA: %s", param->cfm_req.num_val, bda_str.c_str());
+            ESP_LOGI("app_gap_callback", "Confirm request for passkey: %" PRIu32 ", for BDA: %s", param->cfm_req.num_val, bda_str.c_str());
+            // ESP_LOGI("app_gap_callback", "Confirm request for passkey: %u, for BDA: %s", param->cfm_req.num_val, bda_str.c_str());
             if (param->cfm_req.num_val == 123456) {
                 esp_bt_gap_ssp_confirm_reply(param->cfm_req.bda, true);
             }
@@ -259,7 +268,7 @@ void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
 
         case ESP_BT_GAP_KEY_NOTIF_EVT: {
             std::string bda_str = bdaToString(param->key_notif.bda);
-            ESP_LOGI("app_gap_callback", "Passkey notification: %d, for BDA: %s", param->key_notif.passkey, bda_str.c_str());
+            ESP_LOGI("app_gap_callback", "Passkey notification: %" PRIu32 ", for BDA: %s", param->key_notif.passkey, bda_str.c_str());
             break;
         }
     
@@ -351,8 +360,7 @@ void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
 }
 
 void a2d_sink_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param) {
-    const char* TAG;    
-    TAG = "A2D SINK CALLBACK";
+    const char* TAG = "A2D SINK CALLBACK";
 
     switch (event) {
         case ESP_A2D_CONNECTION_STATE_EVT:
@@ -381,22 +389,22 @@ void a2d_sink_callback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param) {
             break;
 
         // case ESP_A2D_SNK_PSC_CFG_EVT:
-        //     ESP_LOGI(TAG, "A2DP Event: Protocol Service Capabilities Configured (A2DP SINK)");
+            // ESP_LOGI(TAG, "A2DP Event: Protocol Service Capabilities Configured (A2DP SINK)");
         //     // Handle protocol service capabilities configuration (for A2DP SINK) here
         //     break;
 
         // case ESP_A2D_SNK_SET_DELAY_VALUE_EVT:
-        //     ESP_LOGI(TAG, "A2DP Event: A2DP Sink Set Delay Report Value Complete");
+            // ESP_LOGI(TAG, "A2DP Event: A2DP Sink Set Delay Report Value Complete");
         //     // Handle A2DP sink set delay report value completion here
         //     break;
 
         // case ESP_A2D_SNK_GET_DELAY_VALUE_EVT:
-        //     ESP_LOGI(TAG, "A2DP Event: A2DP Sink Get Delay Report Value Complete");
+            // ESP_LOGI(TAG, "A2DP Event: A2DP Sink Get Delay Report Value Complete");
         //     // Handle A2DP sink get delay report value completion here
         //     break;
 
         // case ESP_A2D_REPORT_SNK_DELAY_VALUE_EVT:
-        //     ESP_LOGI(TAG, "A2DP Event: Report Delay Value (A2DP SRC)");
+            // ESP_LOGI(TAG, "A2DP Event: Report Delay Value (A2DP SRC)");
         //     // Handle delay value report (for A2DP SRC) here
         //     break;
 
@@ -471,10 +479,10 @@ void pair_with_device(const std::string& bdaStr, esp_bd_addr_t bda) {
     esp_err_t sspResult = esp_a2d_sink_connect(bda); 
 
     if (sspResult == ESP_OK) {
-        ESP_LOGI(TAG, "Connection (and thus pairing) initiated using SSP.");
+        ESP_LOGI(TAG, "PAIRING SSP SUCCESS using SSP.");
         return;
     } else {
-        ESP_LOGI(TAG, "Connection using SSP failed. Trying Legacy Pairing...");
+        ESP_LOGI(TAG, "PAIRING SSP FAILED. Trying Legacy Pairing...");
 
         // Setup for legacy pairing. Note: You may need to provide a PIN code for legacy pairing.
         esp_bt_pin_type_t pinType = ESP_BT_PIN_TYPE_FIXED;
@@ -553,7 +561,7 @@ const char* gap_event_to_string(esp_bt_gap_cb_event_t event) {
           const char* TAG = "gap_event_to_string()";
           static char unknownEventStr[50];
           snprintf(unknownEventStr, sizeof(unknownEventStr), "UNKNOWN_EVENT (Value: %d)", event);
-          ESP_LOGW(TAG, "%s", unknownEventStr);  // Using ESP_LOGW for "warning" since an unknown event might be unexpected
+          ESP_LOGW(TAG, "%s", unknownEventStr);  // Using for "warning" since an unknown event might be unexpected
           return unknownEventStr;
     }
 }
@@ -731,9 +739,12 @@ void start_ble_scan(void) {
         .scan_filter_policy     = BLE_SCAN_FILTER_ALLOW_ALL,
         .scan_interval          = 0x50,
         .scan_window            = 0x30,
+        .scan_duplicate         = BLE_SCAN_DUPLICATE_DISABLE  // Using the correct enum value
     };
+
     esp_ble_gap_set_scan_params(&ble_scan_params);
 }
+
 
 void compareAndReportMatches(void) {
     const char* TAG = "MATCH_REPORT";
@@ -754,7 +765,7 @@ void compareAndReportMatches(void) {
 }
 
 BleAdvertisementData extractBleAdvFields(const uint8_t* ble_adv, uint8_t adv_length) {
-    char* TAG = "BLE ADVERTISEMENT DATA";
+    const char* TAG = "BLE ADVERTISEMENT DATA";
 
     BleAdvertisementData advData;
     uint8_t index = 0;
@@ -802,7 +813,7 @@ BleAdvertisementData extractBleAdvFields(const uint8_t* ble_adv, uint8_t adv_len
 }
 
 void printBleAdvertisementData(const uint8_t* ble_adv, uint8_t adv_length, const std::string& address) {
-    char* TAG = "PRINT BLE ADV DATA";
+    const char* TAG = "PRINT BLE ADV DATA";
 
     BleAdvertisementData advData = extractBleAdvFields(ble_adv, adv_length);
 
@@ -869,7 +880,7 @@ std::string mapToString(const std::map<std::string, std::string>& deviceMap) {
 
 
 void print_ESP32_info(void) {
-    char* TAG = "ESP32 INFO";
+    const char* TAG = "ESP32 INFO";
     // Print out general ESP32 information
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "ESP-IDF Version: %s", esp_get_idf_version());
@@ -880,7 +891,7 @@ void print_ESP32_info(void) {
     // ESP_LOGI(TAG, "Chip Cores: %d", chip_info.cores);
     // ESP_LOGI(TAG, "Chip Revision: %d", chip_info.revision);
     
-    ESP_LOGI(TAG, "Flash Chip Size: %u bytes", spi_flash_get_chip_size());
+    // ESP_LOGI(TAG, "Flash Chip Size: %u bytes", spi_flash_get_chip_size());
 
     // Print Bluetooth Controller Information
     esp_bt_controller_status_t status = esp_bt_controller_get_status();
@@ -933,20 +944,19 @@ void commonInitialization(void){
 }
 
 #ifdef ARDUINO
-void setup() {
-    // Arduino-specific initialization
-    commonInitialization();
-}
+  void setup() {
+      commonInitialization();
+  }
 
-void loop() {
-    // Arduino-specific continuous operation
+  void loop() {
+      // Arduino-specific continuous operation
 
-}
-#else
-//wrapped in extern, because this is a .cpp file
-extern "C" {
-    void app_main(void) {
-        commonInitialization();
-    }
-}
+  }
+#elif defined(ESP_PLATFORM)
+  //wrapped in extern, because this is a .cpp file
+  extern "C" {
+      void app_main(void) {
+          commonInitialization();
+      }
+  }
 #endif
