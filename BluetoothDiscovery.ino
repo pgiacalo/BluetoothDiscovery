@@ -60,7 +60,7 @@ extern "C" {
 #include <inttypes.h>
 
 
-#define MAX_RETRY_COUNT 10
+#define MAX_RETRY_COUNT 3
 
 bool BLE_SCAN_ON = false;
 
@@ -149,7 +149,14 @@ void Initialize_Stack(void) {
     } 
     ESP_LOGI(TAG, "ESP_BT_MODE_BTDM SUCCEEDED");
 
-    if ((ret = esp_bluedroid_init()) != ESP_OK) {
+    #ifdef ARDUINO
+        ret = esp_bluedroid_init();     //deprecated in IDF. use esp_bluedroid_init_with_cfg()
+    #elif defined(ESP_PLATFORM)
+        esp_bluedroid_config_t bluedroid_cfg = BT_BLUEDROID_INIT_CONFIG_DEFAULT();
+        ret = esp_bluedroid_init_with_cfg(&bluedroid_cfg);
+    #endif
+
+    if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Initialize bluedroid failed: %s", esp_err_to_name(ret));
         print_ESP32_info();
         return;
